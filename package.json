@@ -12,7 +12,7 @@
     "react"
   ],
   "license": "MIT",
-  "author": "",
+  "author": "AkagiYui",
   "packageManager": "pnpm@11.1.2",
   "type": "module",
   "exports": {
@@ -31,7 +31,7 @@
   "scripts": {
     "build": "tsdown",
     "dev": "tsdown --watch",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "pnpm run build"
   },
   "peerDependencies": {
     "vite": ">=4"
@@ -44,8 +44,8 @@
   },
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "https://github.com/AkagiYui/vite-plugin-iconify-offline"
   },
-  "homepage": "",
+  "homepage": "https://github.com/AkagiYui/vite-plugin-iconify-offline",
   "bugs": ""
 }
