@@ -1,0 +1,51 @@
+{
+  "name": "vite-plugin-iconify-offline",
+  "version": "0.1.0",
+  "description": "Vite 插件：构建时自动扫描 Iconify 图标引用并预注册，实现零运行时开销的离线图标方案",
+  "keywords": [
+    "vite",
+    "vite-plugin",
+    "iconify",
+    "offline",
+    "icon",
+    "vue",
+    "react"
+  ],
+  "license": "MIT",
+  "author": "",
+  "packageManager": "pnpm@11.1.2",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "vite": ">=4"
+  },
+  "devDependencies": {
+    "@types/node": "^25.8.0",
+    "tsdown": "^0.22.0",
+    "typescript": "^5.7.0",
+    "vite": "^8.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "homepage": "",
+  "bugs": ""
+}
