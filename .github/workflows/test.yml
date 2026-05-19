@@ -7,41 +7,73 @@ on:
     branches: [master]
 
 jobs:
-  test:
+  # ─── 单元测试：纯函数逻辑，跨 Node 版本 ───
+  unit:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         node-version: [22, 24, 26]
-        vite-version: [4, 5, 6, 7, 8]
-      # 某个版本失败不影响其他版本的结果
       fail-fast: false
-
     steps:
       - uses: actions/checkout@v6
 
       - uses: pnpm/action-setup@v6
-        with:
-          cache: true
 
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
 
-      - name: 安装依赖
-        run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile
+
+      - name: 运行单元测试
+        run: pnpm test:unit
+
+  # ─── 集成测试：真实 Vite 构建，跨 Vite 版本 ───
+  integration:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        vite-version: [4, 5, 6, 7, 8]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
 
       - name: 安装指定 Vite 版本
         run: pnpm add -D vite@${{ matrix.vite-version }}
 
-      - name: 构建
-        run: pnpm build
+      - name: 运行集成测试
+        run: pnpm test:e2e
 
-      - name: 验证产物包含插件钩子
+  # ─── 构建验证：确保 TS 编译和类型生成正常 ───
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: 验证构建产物结构
         run: |
-          if grep -q "configResolved\|buildStart\|transform\|enforce" dist/index.mjs; then
-            echo "✅ 产物包含 Vite 插件钩子"
-          else
-            echo "❌ 产物缺少插件钩子"
-            exit 1
-          fi
+          test -f dist/index.mjs || { echo "❌ 缺少 ESM 产物"; exit 1; }
+          test -f dist/index.cjs || { echo "❌ 缺少 CJS 产物"; exit 1; }
+          test -f dist/index.d.ts || { echo "❌ 缺少类型声明"; exit 1; }
+          echo "✅ 构建产物完整"

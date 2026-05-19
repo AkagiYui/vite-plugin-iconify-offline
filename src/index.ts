@@ -22,7 +22,7 @@ import type { Plugin } from "vite"
 // ---------------------------------------------------------------------------
 
 /** 图标集中单个图标的数据结构 */
-interface IconifyIconData {
+export interface IconifyIconData {
   body: string
   left?: number
   top?: number
@@ -34,7 +34,7 @@ interface IconifyIconData {
 }
 
 /** 图标集中单个别名的数据结构 */
-interface IconifyAliasData {
+export interface IconifyAliasData {
   parent: string
   left?: number
   top?: number
@@ -46,7 +46,7 @@ interface IconifyAliasData {
 }
 
 /** Iconify JSON 数据集格式 */
-interface IconifyJSON {
+export interface IconifyJSON {
   prefix: string
   icons: Record<string, IconifyIconData>
   aliases?: Record<string, IconifyAliasData>
@@ -93,7 +93,7 @@ const require = createRequire(import.meta.url)
 const ICON_PATTERN = /["'`]([a-z0-9-]+:[a-z0-9-]+)["'`]/g
 
 /** 已知的 Tailwind 修饰符 / Vue 事件 / data-* 属性，排除误报 */
-const SKIP_PREFIXES = new Set([
+export const SKIP_PREFIXES = new Set([
   // Tailwind 响应式断点
   "sm", "md", "lg", "xl", "2xl",
   // Tailwind 状态修饰符
@@ -123,8 +123,13 @@ const SKIP_PREFIXES = new Set([
 // ---------------------------------------------------------------------------
 
 /** prefix -> Set<iconName> */
-const collectedIcons = new Map<string, Set<string>>()
+export const collectedIcons = new Map<string, Set<string>>()
 let preloadCollections: IconifyJSON[] = []
+
+/** 清空已收集的图标（供测试使用） */
+export function clearCollectedIcons(): void {
+  collectedIcons.clear()
+}
 
 // ---------------------------------------------------------------------------
 // 工具函数
@@ -133,7 +138,7 @@ let preloadCollections: IconifyJSON[] = []
 /**
  * 从源码内容中提取图标引用。
  */
-function extractIcons(code: string): void {
+export function extractIcons(code: string): void {
   const matches = code.matchAll(ICON_PATTERN)
   for (const match of matches) {
     const full = match[1]
@@ -224,7 +229,7 @@ function loadIconSet(prefix: string, rootDir: string): IconifyJSON | null {
 /**
  * 解析别名链，返回最终图标数据。
  */
-function resolveAlias(fullSet: IconifyJSON, name: string): IconifyIconData | null {
+export function resolveAlias(fullSet: IconifyJSON, name: string): IconifyIconData | null {
   const aliases = fullSet.aliases
   if (!aliases || !aliases[name]) return null
 

@@ -2,3 +2,26 @@ node_modules/
 dist/
 *.tsbuildinfo
 .DS_Store
+
+# 测试
+coverage/
+iconify-e2e-*/
+
+# IDE
+.vscode/
+.idea/
+
+# 环境变量
+.env
+.env.*
+!.env.example
+
+# 调试日志
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# 临时文件
+*.tmp
+.tmp/
+tmp/
