@@ -7,8 +7,8 @@
  * 原理：
  * 1. 扫描源码中 `name="prefix:icon"` 和 `icon: 'prefix:icon'` 等模式
  * 2. 从本地 @iconify-json/* 包读取图标数据，仅保留用到的图标
- * 3. 通过 transform 钩子在应用入口文件中注入 addCollection 调用
- * 4. 由于 import 是静态提升的，addCollection 会在应用渲染前同步执行
+ * 3. 通过 this.emitFile 生成独立 chunk，自动被 Vite 打包
+ * 4. chunk 中的 import { addCollection } + addCollection({...}) 经过标准构建通道，不会被 tree-shake
  */
 
 import fs from "node:fs"
@@ -61,44 +61,11 @@ interface IconifyJSON {
 /** 插件配置选项 */
 export interface IconifyOfflineOptions {
   /**
-   * 应用入口文件路径（相对于项目根目录），插件会在此文件顶部注入 addCollection 调用。
-   * @default "src/main.ts"
-   */
-  entry?: string
-
-  /**
    * Iconify 图标组件包名，插件会从中导入 `addCollection`。
-   * 离线包：`@iconify/vue/offline`、`@iconify/react/offline` 等
-   * 在线包（需配合 disableAPI）：`@iconify/vue`、`@iconify-icon/react` 等
-   * @default "@iconify/vue/offline"
+   * 例如：`@iconify/vue`、`@iconify/vue/offline`、`@iconify-icon/solid` 等
+   * @default "@iconify/vue"
    */
   package?: string
-
-  /**
-   * 是否注入 API 禁用代码（仅非 offline 包需要）。
-   * 当使用在线包且希望完全禁用网络请求时设为 true。
-   * @default false
-   */
-  disableAPI?: boolean
-
-  /**
-   * addCollection 的导入名称。
-   * @default "addCollection"
-   */
-  addCollectionImport?: string
-
-  /**
-   * 禁用 API 的导入名称，仅在 disableAPI=true 时生效。
-   * 例如 `@iconify/vue` 使用 `disableFetch`，`@iconify-icon/react` 使用 `setCustomIconsLoader`。
-   * @default "disableFetch"
-   */
-  disableAPIImport?: string
-
-  /**
-   * 是否在控制台输出详细日志。
-   * @default true
-   */
-  verbose?: boolean
 
   /**
    * 自定义扫描目录，默认扫描 `src/` 目录。
@@ -108,11 +75,10 @@ export interface IconifyOfflineOptions {
   scanDir?: string
 
   /**
-   * 是否在构建时始终重新扫描图标引用。
-   * 设为 false 可复用缓存加速二次构建（暂未实现缓存，保留接口）。
+   * 是否在控制台输出详细日志。
    * @default true
    */
-  force?: boolean
+  verbose?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -346,7 +312,6 @@ function buildPreloadCollections(rootDir: string, verbose: boolean): IconifyJSON
  *   plugins: [
  *     vue(),
  *     iconifyOffline({
- *       entry: "src/main.ts",
  *       package: "@iconify/vue/offline",
  *     }),
  *   ],
@@ -355,14 +320,9 @@ function buildPreloadCollections(rootDir: string, verbose: boolean): IconifyJSON
  */
 function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
   const {
-    entry = "src/main.ts",
-    package: pkg = "@iconify/vue/offline",
-    disableAPI = false,
-    addCollectionImport = "addCollection",
-    disableAPIImport = "disableFetch",
+    package: pkgRaw = "@iconify/vue",
     verbose = true,
     scanDir: customScanDir,
-    force = true,
   } = options
 
   let rootDir: string
@@ -376,14 +336,9 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
     },
 
     buildStart() {
-      if (!force && preloadCollections.length > 0) {
-        return // 保留缓存（目前 force 始终为 true，此为预留）
-      }
-
       collectedIcons.clear()
       preloadCollections = []
 
-      // 确定扫描目录
       const targetDir = customScanDir
         ? path.resolve(rootDir, customScanDir)
         : path.join(rootDir, "src")
@@ -400,33 +355,71 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
       }
 
       preloadCollections = buildPreloadCollections(rootDir, verbose)
+
+      // 通过 emitFile 生成独立 chunk，绕过 tree-shaking
+      if (preloadCollections.length > 0) {
+        this.emitFile({
+          type: "chunk",
+          id: "\0iconify-offline:icons",
+        })
+        if (verbose) {
+          console.log("[iconify-offline] 已生成图标注册 chunk")
+        }
+      }
     },
 
-    transform(code, id) {
-      // 在应用入口文件中注入 addCollection 调用
-      if (!id.endsWith(entry)) return
+    // 虚拟模块：图标注册入口
+    resolveId(id) {
+      if (id === "\0iconify-offline:icons") return id
+    },
 
-      if (preloadCollections.length === 0) return
+    load(id) {
+      if (id !== "\0iconify-offline:icons") return
+      if (preloadCollections.length === 0) return ""
 
-      // 生成 addCollection 调用
       const addCollectionCalls = preloadCollections
         .map(c => `addCollection(${JSON.stringify(c)});`)
         .join("\n")
 
-      // 确定需要导入的名称
-      const imports = disableAPI
-        ? [addCollectionImport, disableAPIImport]
-        : [addCollectionImport]
+      // 从主包导入 addCollection，与 Icon 组件共享同一 storage
+      const importFrom = pkgRaw.replace(/\/offline$/, "")
 
-      // 构建注入代码
-      let injection = `import { ${imports.join(", ")} } from "${pkg}";\n${addCollectionCalls}\n`
+      // this.emitFile 是同步的，必须在 load/buildStart 等同步钩子中调用。
+      // 由于 load 可以返回 string 直接作为模块内容，我们直接返回即可，
+      // Vite 会自动打包这个模块。
+      return `import { addCollection } from "${importFrom}";\n${addCollectionCalls}\n`
+    },
 
-      if (disableAPI) {
-        // 禁用 API 网络请求，确保图标仅从预注册数据加载
-        injection += `${disableAPIImport}(() => ({}), "${preloadCollections[0]?.prefix}");\n`
+    // 构建完成后，将 chunk 注入到 index.html 头部
+    writeBundle(_, bundle) {
+      if (preloadCollections.length === 0) return
+
+      // 找到我们 chunk 的输出文件名
+      let chunkFile = ""
+      for (const [, info] of Object.entries(bundle)) {
+        if (info.type === "chunk" && info.facadeModuleId === "\0iconify-offline:icons") {
+          chunkFile = "/" + info.fileName
+          break
+        }
       }
 
-      return injection + code
+      if (!chunkFile) {
+        console.warn("[iconify-offline] 未找到图标注册 chunk，可能是 tree-shaking 了")
+        return
+      }
+
+      const htmlPath = path.join(rootDir, "dist", "index.html")
+      if (!fs.existsSync(htmlPath)) return
+
+      let html = fs.readFileSync(htmlPath, "utf-8")
+      // 在主 bundle 之前注入，确保 addCollection 先执行
+      const scriptTag = `    <script type="module" crossorigin src="${chunkFile}"></script>\n`
+      html = html.replace("</head>", scriptTag + "</head>")
+      fs.writeFileSync(htmlPath, html)
+
+      if (verbose) {
+        console.log(`[iconify-offline] 已注入图标注册脚本: ${path.basename(chunkFile)}`)
+      }
     },
   }
 }
