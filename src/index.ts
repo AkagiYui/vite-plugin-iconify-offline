@@ -405,7 +405,8 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
         .join("\n")
 
       // 从主包导入 addCollection，与 Icon 组件共享同一 storage
-      const importFrom = pkgName.replace(/\/offline$/, "")
+      // configResolved 保证 pkgName 已赋值，用 ! 通知 TS
+      const importFrom = pkgName!.replace(/\/offline$/, "")
 
       // this.emitFile 是同步的，必须在 load/buildStart 等同步钩子中调用。
       // 由于 load 可以返回 string 直接作为模块内容，我们直接返回即可，
