@@ -24,7 +24,7 @@ npm i -D @iconify-json/lucide @iconify-json/mdi
 
 ## 使用
 
-插件默认适配 `@iconify/vue`（Vue 3），无需任何配置：
+插件会自动从你的 Vite 插件列表检测框架，零配置即可使用：
 
 ```ts
 // vite.config.ts
@@ -34,25 +34,30 @@ import iconifyOffline from "vite-plugin-iconify-offline"
 
 export default defineConfig({
   plugins: [
-    vue(),
-    iconifyOffline(),
+    vue(),            // ← 插件检测到这行，自动选择 @iconify/vue
+    iconifyOffline(), // ← 无需指定 package
   ],
 })
 ```
 
-### 其他框架
-
-通过 `package` 选项切换到对应的图标组件包：
+### 其他框架（自动检测）
 
 ```ts
-// React
-iconifyOffline({ package: "@iconify/react" })
+// React — 自动检测到 @vitejs/plugin-react → 选择 @iconify/react
+plugins: [react(), iconifyOffline()]
 
-// SolidJS
-iconifyOffline({ package: "@iconify-icon/solid" })
+// SolidJS — 自动检测到 vite-plugin-solid → 选择 @iconify-icon/solid
+plugins: [solid(), iconifyOffline()]
+```
 
-// Vue 离线版
+### 手动指定（覆盖自动检测）
+
+```ts
+// 显式指定离线版
 iconifyOffline({ package: "@iconify/vue/offline" })
+
+// 显式指定主包（自动检测失败时也可以这样写）
+iconifyOffline({ package: "@iconify/vue" })
 ```
 
 前提：目标包必须导出 `addCollection` 函数。
@@ -61,7 +66,7 @@ iconifyOffline({ package: "@iconify/vue/offline" })
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `package` | `string` | `"@iconify/vue"` | Iconify 图标组件包名，插件会从中导入 `addCollection` |
+| `package` | `string` | 自动检测 | Iconify 图标组件包名。不指定时自动从 Vite 插件检测框架（vue→`@iconify/vue`、react→`@iconify/react`、solid→`@iconify-icon/solid`） |
 | `scanDir` | `string` | `"src"` | 自定义扫描目录，设为 `"."` 可扫描整个项目 |
 | `verbose` | `boolean` | `true` | 是否在控制台输出详细日志 |
 

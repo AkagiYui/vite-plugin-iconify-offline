@@ -62,8 +62,10 @@ interface IconifyJSON {
 export interface IconifyOfflineOptions {
   /**
    * Iconify 图标组件包名，插件会从中导入 `addCollection`。
-   * 例如：`@iconify/vue`、`@iconify/vue/offline`、`@iconify-icon/solid` 等
-   * @default "@iconify/vue"
+   * 例如：`@iconify/vue`、`@iconify/vue/offline`、`@iconify-icon/solid` 等。
+   * 不指定时自动从 Vite 插件列表检测框架：
+   * vue → @iconify/vue，react → @iconify/react，solid → @iconify-icon/solid
+   * @default 自动检测，检测不到时回退为 "@iconify/vue"
    */
   package?: string
 
@@ -320,12 +322,25 @@ function buildPreloadCollections(rootDir: string, verbose: boolean): IconifyJSON
  */
 function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
   const {
-    package: pkgRaw = "@iconify/vue",
+    package: userPkg,
     verbose = true,
     scanDir: customScanDir,
   } = options
 
   let rootDir: string
+  let pkgName = userPkg  // 用户显式指定优先，未指定则 auto-detect
+
+  /** 从 Vite 插件列表自动检测框架 */
+  function detectPackageFromPlugins(plugins: readonly any[]): string | null {
+    for (const p of plugins) {
+      const name: string = p?.name || ""
+      if (name.startsWith("vite:vue") || name.includes("unplugin-vue")) return "@iconify/vue"
+      if (name.startsWith("vite:react") || name.includes("@vitejs/plugin-react")) return "@iconify/react"
+      if (name.includes("solid")) return "@iconify-icon/solid"
+      if (name.includes("svelte")) return "@iconify/svelte"
+    }
+    return null
+  }
 
   return {
     name: "vite-plugin-iconify-offline",
@@ -333,6 +348,14 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
 
     configResolved(config) {
       rootDir = config.root
+
+      // 用户未显式指定 package 时，自动从 Vite 插件检测框架
+      if (!pkgName) {
+        pkgName = detectPackageFromPlugins(config.plugins) || "@iconify/vue"
+        if (verbose) {
+          console.log(`[iconify-offline] 自动检测到图标包: ${pkgName}`)
+        }
+      }
     },
 
     buildStart() {
@@ -382,7 +405,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
         .join("\n")
 
       // 从主包导入 addCollection，与 Icon 组件共享同一 storage
-      const importFrom = pkgRaw.replace(/\/offline$/, "")
+      const importFrom = pkgName.replace(/\/offline$/, "")
 
       // this.emitFile 是同步的，必须在 load/buildStart 等同步钩子中调用。
       // 由于 load 可以返回 string 直接作为模块内容，我们直接返回即可，
