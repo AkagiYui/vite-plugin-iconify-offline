@@ -92,6 +92,9 @@ const require = createRequire(import.meta.url)
 /** 匹配源码中的图标引用，如 name="lucide:sun"、icon: 'lucide:map' 或 'lucide:pause' */
 const ICON_PATTERN = /["'`]([a-z0-9-]+:[a-z0-9-]+)["'`]/g
 
+const VIRTUAL_MODULE_ID = "virtual:iconify-offline:icons"
+const RESOLVED_VIRTUAL_MODULE_ID = `\0${VIRTUAL_MODULE_ID}`
+
 /** 已知的 Tailwind 修饰符 / Vue 事件 / data-* 属性，排除误报 */
 export const SKIP_PREFIXES = new Set([
   // Tailwind 响应式断点
@@ -116,6 +119,8 @@ export const SKIP_PREFIXES = new Set([
   "rtl", "ltr",
   // Vue 事件修饰符
   "update",
+  // Vite 虚拟模块 id
+  "virtual",
 ])
 
 // ---------------------------------------------------------------------------
@@ -334,6 +339,55 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
 
   let rootDir: string
   let pkgName = userPkg  // 用户显式指定优先，未指定则 auto-detect
+  let command: "serve" | "build" = "build"
+
+  function findFiles(dir: string, predicate: (filePath: string) => boolean): string[] {
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return []
+    }
+
+    const files: string[] = []
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        files.push(...findFiles(fullPath, predicate))
+      } else if (predicate(fullPath)) {
+        files.push(fullPath)
+      }
+    }
+    return files
+  }
+
+  function injectScriptToHtml(htmlPath: string, chunkPath: string): boolean {
+    let html = fs.readFileSync(htmlPath, "utf-8")
+    if (html.includes(path.basename(chunkPath))) return false
+
+    const scriptSrc = path.relative(path.dirname(htmlPath), chunkPath).split(path.sep).join("/")
+    const normalizedSrc = scriptSrc.startsWith(".") ? scriptSrc : `./${scriptSrc}`
+    const scriptTag = `    <script type="module" crossorigin src="${normalizedSrc}"></script>\n`
+    html = html.replace("</head>", scriptTag + "</head>")
+    fs.writeFileSync(htmlPath, html)
+    return true
+  }
+
+  function injectGeneratedChunks(outDir: string): void {
+    if (preloadCollections.length === 0 || !fs.existsSync(outDir)) return
+
+    const htmlFiles = findFiles(outDir, filePath => path.basename(filePath) === "index.html")
+    const chunkFiles = findFiles(outDir, filePath => path.basename(filePath).includes("_iconify-offline_icons") && filePath.endsWith(".js"))
+    if (htmlFiles.length === 0 || chunkFiles.length === 0) return
+
+    for (const htmlPath of htmlFiles) {
+      const htmlDir = path.dirname(htmlPath)
+      const chunkPath = chunkFiles.find(filePath => path.dirname(filePath).startsWith(htmlDir)) || chunkFiles[0]
+      if (injectScriptToHtml(htmlPath, chunkPath) && verbose) {
+        console.log(`[iconify-offline] 已注入图标注册脚本: ${path.basename(chunkPath)}`)
+      }
+    }
+  }
 
   /** 从 Vite 插件列表自动检测框架 */
   function detectPackageFromPlugins(plugins: readonly any[]): string | null {
@@ -353,6 +407,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
 
     configResolved(config) {
       rootDir = config.root
+      command = config.command
 
       // 用户未显式指定 package 时，自动从 Vite 插件检测框架
       if (!pkgName) {
@@ -384,11 +439,11 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
 
       preloadCollections = buildPreloadCollections(rootDir, verbose)
 
-      // 通过 emitFile 生成独立 chunk，绕过 tree-shaking
-      if (preloadCollections.length > 0) {
+      if (preloadCollections.length > 0 && command === "build") {
         this.emitFile({
           type: "chunk",
-          id: "\0iconify-offline:icons",
+          id: VIRTUAL_MODULE_ID,
+          name: "_iconify-offline_icons",
         })
         if (verbose) {
           console.log("[iconify-offline] 已生成图标注册 chunk")
@@ -396,38 +451,54 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
       }
     },
 
+    transformIndexHtml() {
+      if (command !== "serve" || preloadCollections.length === 0) return
+
+      return [
+        {
+          tag: "script",
+          children: `window.IconifyPreload = ${JSON.stringify(preloadCollections)};`,
+          injectTo: "head-prepend",
+        },
+      ]
+    },
+
     // 虚拟模块：图标注册入口
     resolveId(id) {
-      if (id === "\0iconify-offline:icons") return id
+      if (id === VIRTUAL_MODULE_ID) return RESOLVED_VIRTUAL_MODULE_ID
     },
 
     load(id) {
-      if (id !== "\0iconify-offline:icons") return
+      if (id !== RESOLVED_VIRTUAL_MODULE_ID) return
       if (preloadCollections.length === 0) return ""
 
       const addCollectionCalls = preloadCollections
         .map(c => `addCollection(${JSON.stringify(c)});`)
         .join("\n")
 
+      const disableLoaderCalls = preloadCollections
+        .map(c => `setCustomIconsLoader(() => ({ prefix: ${JSON.stringify(c.prefix)}, icons: {} }), ${JSON.stringify(c.prefix)});`)
+        .join("\n")
+
       // 从主包导入 addCollection，与 Icon 组件共享同一 storage
       // configResolved 保证 pkgName 已赋值，用 ! 通知 TS
       const importFrom = pkgName!.replace(/\/offline$/, "")
 
-      // this.emitFile 是同步的，必须在 load/buildStart 等同步钩子中调用。
-      // 由于 load 可以返回 string 直接作为模块内容，我们直接返回即可，
-      // Vite 会自动打包这个模块。
-      return `import { addCollection } from "${importFrom}";\n${addCollectionCalls}\n`
+      return `import { addCollection, setCustomIconsLoader } from "${importFrom}";\n${addCollectionCalls}\n${disableLoaderCalls}\n`
     },
 
-    // 构建完成后，将 chunk 注入到 index.html 头部
-    writeBundle(_, bundle) {
+    // 构建完成后，将 chunk 注入到实际输出目录中的 index.html
+    writeBundle(outputOptions, bundle) {
       if (preloadCollections.length === 0) return
 
-      // 找到我们 chunk 的输出文件名
       let chunkFile = ""
       for (const [, info] of Object.entries(bundle)) {
-        if (info.type === "chunk" && info.facadeModuleId === "\0iconify-offline:icons") {
-          chunkFile = "/" + info.fileName
+        if (info.type === "chunk" && (
+          info.facadeModuleId === RESOLVED_VIRTUAL_MODULE_ID
+          || info.name === "_iconify-offline_icons"
+          || info.fileName.includes("_iconify-offline_icons")
+        )) {
+          chunkFile = info.fileName
           break
         }
       }
@@ -437,18 +508,24 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
         return
       }
 
-      const htmlPath = path.join(rootDir, "dist", "index.html")
-      if (!fs.existsSync(htmlPath)) return
+      const outDir = outputOptions.dir || path.join(rootDir, "dist")
+      const htmlCandidates = [
+        path.join(outDir, "index.html"),
+        path.join(outDir, "client", "index.html"),
+      ]
+      const htmlPath = htmlCandidates.find(fs.existsSync)
+      if (!htmlPath) return
 
-      let html = fs.readFileSync(htmlPath, "utf-8")
-      // 在主 bundle 之前注入，确保 addCollection 先执行
-      const scriptTag = `    <script type="module" crossorigin src="${chunkFile}"></script>\n`
-      html = html.replace("</head>", scriptTag + "</head>")
-      fs.writeFileSync(htmlPath, html)
+      const chunkPath = path.join(outDir, chunkFile)
+      const didInject = injectScriptToHtml(htmlPath, chunkPath)
 
-      if (verbose) {
+      if (didInject && verbose) {
         console.log(`[iconify-offline] 已注入图标注册脚本: ${path.basename(chunkFile)}`)
       }
+    },
+
+    closeBundle() {
+      injectGeneratedChunks(path.join(rootDir, "dist"))
     },
   }
 }
