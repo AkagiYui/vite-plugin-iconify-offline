@@ -1,8 +1,8 @@
 # vite-plugin-iconify-offline
 
-[![npm version](https://img.shields.io/npm/v/vite-plugin-iconify-offline)](https://www.npmjs.com/package/vite-plugin-iconify-offline)
-[![npm downloads](https://img.shields.io/npm/dm/vite-plugin-iconify-offline)](https://www.npmjs.com/package/vite-plugin-iconify-offline)
-[![npm license](https://img.shields.io/npm/l/vite-plugin-iconify-offline)](https://www.npmjs.com/package/vite-plugin-iconify-offline)
+[![npm version](https://img.shields.io/npm/v/vite-plugin-iconify-offline)](https://npmx.dev/package/vite-plugin-iconify-offline)
+[![npm downloads](https://img.shields.io/npm/dm/vite-plugin-iconify-offline)](https://npmx.dev/package/vite-plugin-iconify-offline)
+[![npm license](https://img.shields.io/npm/l/vite-plugin-iconify-offline)](https://npmx.dev/package/vite-plugin-iconify-offline)
 
 构建时自动扫描 Iconify 图标引用，将用到的图标数据预注册到运行时，实现**零网络请求、零运行时开销**的离线图标方案。
 
