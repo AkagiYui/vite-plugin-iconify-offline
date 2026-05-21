@@ -1,6 +1,6 @@
 {
   "name": "vite-plugin-iconify-offline",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Vite 插件：构建时自动扫描 Iconify 图标引用并预注册，实现零运行时开销的离线图标方案",
   "keywords": [
     "vite",
