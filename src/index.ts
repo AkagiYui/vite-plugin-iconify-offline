@@ -77,6 +77,13 @@ export interface IconifyOfflineOptions {
   scanDir?: string
 
   /**
+   * 手动指定额外要离线化的图标，用于模板字符串、动态拼接等无法静态扫描的场景。
+   * 格式与 Iconify 图标名一致，例如：`["lucide:sun", "mdi:home"]`。
+   * @default []
+   */
+  icons?: string[]
+
+  /**
    * 是否在控制台输出详细日志。
    * @default true
    */
@@ -136,6 +143,28 @@ export function clearCollectedIcons(): void {
   collectedIcons.clear()
 }
 
+/**
+ * 收集单个 Iconify 图标引用。
+ */
+export function collectIcon(full: string): boolean {
+  const colonIdx = full.indexOf(":")
+  if (colonIdx === -1) return false
+  const prefix = full.slice(0, colonIdx)
+  const iconName = full.slice(colonIdx + 1)
+
+  // 跳过 Tailwind 修饰符 / Vue 事件等误报
+  if (SKIP_PREFIXES.has(prefix)) return false
+
+  // 跳过 data-[xxx]: 格式的属性修饰符
+  if (prefix.endsWith("-") || iconName.startsWith("[")) return false
+
+  if (!collectedIcons.has(prefix)) {
+    collectedIcons.set(prefix, new Set())
+  }
+  collectedIcons.get(prefix)!.add(iconName)
+  return true
+}
+
 // ---------------------------------------------------------------------------
 // 工具函数
 // ---------------------------------------------------------------------------
@@ -146,22 +175,7 @@ export function clearCollectedIcons(): void {
 export function extractIcons(code: string): void {
   const matches = code.matchAll(ICON_PATTERN)
   for (const match of matches) {
-    const full = match[1]
-    const colonIdx = full.indexOf(":")
-    if (colonIdx === -1) continue
-    const prefix = full.slice(0, colonIdx)
-    const iconName = full.slice(colonIdx + 1)
-
-    // 跳过 Tailwind 修饰符 / Vue 事件等误报
-    if (SKIP_PREFIXES.has(prefix)) continue
-
-    // 跳过 data-[xxx]: 格式的属性修饰符
-    if (prefix.endsWith("-") || iconName.startsWith("[")) continue
-
-    if (!collectedIcons.has(prefix)) {
-      collectedIcons.set(prefix, new Set())
-    }
-    collectedIcons.get(prefix)!.add(iconName)
+    collectIcon(match[1])
   }
 }
 
@@ -335,6 +349,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
     package: userPkg,
     verbose = true,
     scanDir: customScanDir,
+    icons = [],
   } = options
 
   let rootDir: string
@@ -430,6 +445,10 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
         scanDir(targetDir)
       } else if (verbose) {
         console.warn(`[iconify-offline] 扫描目录不存在: ${targetDir}`)
+      }
+
+      for (const icon of icons) {
+        collectIcon(icon)
       }
 
       const total = Array.from(collectedIcons.values()).reduce((s, v) => s + v.size, 0)

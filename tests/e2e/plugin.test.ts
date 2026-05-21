@@ -227,6 +227,29 @@ export default defineConfig({
     expect(chunk!).toMatch(/github/)
   }, 30000)
 
+  it("应支持手动传入额外离线图标", async () => {
+    const fixtureDir = createFixture({
+      "index.html": `<!DOCTYPE html>
+<html><head></head><body></body></html>`,
+      "src/main.ts": `const icon = \`lucide:\${name}\``,
+      "vite.config.ts": `import { defineConfig } from "vite"
+import iconifyOffline from "${resolve(projectRoot, "src/index.ts") }"
+
+export default defineConfig({
+  plugins: [iconifyOffline({ verbose: false, icons: ["lucide:settings"] })],
+})`,
+    })
+
+    const distDir = await buildFixture(fixtureDir)
+    const html = readHtml(distDir)
+    const chunk = readIconChunk(distDir)
+
+    expect(html).toContain("_iconify-offline_icons")
+    expect(chunk).not.toBeNull()
+    expect(chunk!).toMatch(/lucide/)
+    expect(chunk!).toMatch(/settings/)
+  }, 30000)
+
   it("应自动检测 icon 包为 @iconify/vue", async () => {
     const fixtureDir = createFixture({
       "index.html": `<!DOCTYPE html>

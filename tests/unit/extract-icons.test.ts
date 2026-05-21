@@ -1,11 +1,21 @@
 import { describe, it, expect, beforeEach } from "vitest"
-import { extractIcons, collectedIcons, clearCollectedIcons } from "../../src/index"
+import { collectIcon, extractIcons, collectedIcons, clearCollectedIcons } from "../../src/index"
 
 beforeEach(() => {
   clearCollectedIcons()
 })
 
 describe("extractIcons", () => {
+  it("应手动收集单个图标引用", () => {
+    expect(collectIcon("lucide:settings")).toBe(true)
+    expect(collectedIcons.get("lucide")).toEqual(new Set(["settings"]))
+  })
+
+  it("手动收集时应复用误报过滤", () => {
+    expect(collectIcon("hover:bg-blue")).toBe(false)
+    expect(collectedIcons.has("hover")).toBe(false)
+  })
+
   it("应提取 name=\"prefix:icon\" 格式的图标", () => {
     extractIcons(`<Icon name="lucide:sun" />`)
     expect(collectedIcons.get("lucide")).toEqual(new Set(["sun"]))

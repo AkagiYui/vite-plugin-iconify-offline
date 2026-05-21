@@ -13,6 +13,7 @@ Vite 插件：自动扫描源码中的 Iconify 图标引用，从本地 `@iconif
 - dev 模式通过 `window.IconifyPreload` 在页面启动前预载图标
 - build 模式生成独立 `_iconify-offline_icons-*.js` chunk，并自动注入最终 HTML
 - 支持非默认输出目录，例如 `dist/client/index.html`
+- 支持手动传入额外图标，覆盖模板字符串、动态拼接等无法静态扫描的场景
 - 只打包实际用到的图标，包含别名解析
 - 内置过滤 Tailwind / Vue / Vite 常见 `prefix:name` 误报
 - 对已预注册的图标集禁用自定义 loader 回退，减少运行时网络请求
@@ -106,6 +107,7 @@ iconifyOffline({ package: "@iconify-icon/solid" })
 interface IconifyOfflineOptions {
   package?: string
   scanDir?: string
+  icons?: string[]
   verbose?: boolean
 }
 ```
@@ -114,6 +116,7 @@ interface IconifyOfflineOptions {
 |---|---|---|---|
 | `package` | `string` | 自动检测，失败时为 `@iconify/vue` | 注册图标数据时导入的 Iconify 运行时包 |
 | `scanDir` | `string` | `"src"` | 扫描目录，相对于 Vite root。可设为 `"."` 扫描整个项目 |
+| `icons` | `string[]` | `[]` | 手动指定额外要离线化的图标，例如 `["lucide:sun"]` |
 | `verbose` | `boolean` | `true` | 是否输出扫描、预注册、注入等日志 |
 
 ## 工作方式
@@ -189,7 +192,16 @@ const menu = [
 const icon = `lucide:${name}`
 ```
 
-这类图标需要改成静态字符串，或确保代码中另有可扫描到的字面量。
+这类图标可以通过 `icons` 手动补充：
+
+```ts
+iconifyOffline({
+  icons: [
+    "lucide:sun",
+    "lucide:moon",
+  ],
+})
+```
 
 ## 日志
 
