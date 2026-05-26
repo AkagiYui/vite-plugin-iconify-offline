@@ -72,6 +72,22 @@ async function readDevHtml(fixtureDir: string): Promise<string> {
   }
 }
 
+async function createDevServer(fixtureDir: string): Promise<ViteDevServer> {
+  return createServer({
+    root: fixtureDir,
+    logLevel: "warn",
+    server: {
+      middlewareMode: true,
+    },
+  })
+}
+
+async function readDevVirtualModule(server: ViteDevServer): Promise<string> {
+  const result = await server.pluginContainer.load("\0virtual:iconify-offline:icons")
+  if (typeof result === "string") return result
+  return result?.code || ""
+}
+
 /**
  * 从 dist 目录中读取插件生成的图标注册 chunk 内容。
  * 返回 chunk 文本，或 null 如果没有。
@@ -275,7 +291,7 @@ export default defineConfig({
     expect(chunk!).toMatch(/check/)
   }, 30000)
 
-  it("Vue dev 模式应注入 IconifyPreload", async () => {
+  it("Vue dev 模式应注入图标注册虚拟模块", async () => {
     const fixtureDir = createFixture({
       "index.html": `<!DOCTYPE html>
 <html><head></head><body><script type="module" src="/src/main.ts"></script></body></html>`,
@@ -297,9 +313,72 @@ export default defineConfig({
 
     const html = await readDevHtml(fixtureDir)
 
-    expect(html).toContain("window.IconifyPreload")
-    expect(html).toContain("lucide")
-    expect(html).toContain("shield-check")
+    expect(html).toContain(`"/@id/virtual:iconify-offline:icons"`)
+
+    const server = await createDevServer(fixtureDir)
+    try {
+      const moduleCode = await readDevVirtualModule(server)
+      expect(moduleCode).toContain("addCollection")
+      expect(moduleCode).toContain("setCustomIconsLoader")
+      expect(moduleCode).toContain("lucide")
+      expect(moduleCode).toContain("shield-check")
+    } finally {
+      await server.close()
+    }
+  }, 30000)
+
+  it("dev 模式源码新增图标后应刷新虚拟模块", async () => {
+    const fixtureDir = createFixture({
+      "index.html": `<!DOCTYPE html>
+<html><head></head><body><script type="module" src="/src/main.ts"></script></body></html>`,
+      "src/main.ts": `import { createApp } from "vue"
+import App from "./App.vue"
+createApp(App).mount("#app")`,
+      "src/App.vue": `<template><Icon icon="lucide:sun" /></template>
+<script setup lang="ts">
+import { Icon } from "@iconify/vue"
+</script>`,
+      "vite.config.ts": `import { defineConfig } from "vite"
+import vue from "@vitejs/plugin-vue"
+import iconifyOffline from "${resolve(projectRoot, "src/index.ts") }"
+
+export default defineConfig({
+  plugins: [vue(), iconifyOffline({ verbose: false })],
+})`,
+    })
+
+    const server = await createDevServer(fixtureDir)
+    try {
+      let moduleCode = await readDevVirtualModule(server)
+      expect(moduleCode).toContain("sun")
+      expect(moduleCode).not.toContain("moon")
+
+      const appPath = join(fixtureDir, "src/App.vue")
+      writeFileSync(appPath, `<template>
+  <Icon icon="lucide:sun" />
+  <Icon icon="lucide:moon" />
+</template>
+<script setup lang="ts">
+import { Icon } from "@iconify/vue"
+</script>`)
+
+      const fullReload = new Promise<void>((resolveReload) => {
+        const send = server.ws.send.bind(server.ws)
+        server.ws.send = ((payload: any, ...args: any[]) => {
+          if (payload?.type === "full-reload") resolveReload()
+          return send(payload, ...args)
+        }) as typeof server.ws.send
+      })
+
+      server.watcher.emit("change", appPath)
+      await fullReload
+
+      moduleCode = await readDevVirtualModule(server)
+      expect(moduleCode).toContain("sun")
+      expect(moduleCode).toContain("moon")
+    } finally {
+      await server.close()
+    }
   }, 30000)
 
   it("Solid build 模式应自动检测并注册到 @iconify-icon/solid", async () => {
@@ -329,7 +408,7 @@ export default defineConfig({
     expect(chunk!).toMatch(/panel-left/)
   }, 30000)
 
-  it("Solid dev 模式应注入 IconifyPreload", async () => {
+  it("Solid dev 模式应注入图标注册虚拟模块", async () => {
     const fixtureDir = createFixture({
       "index.html": `<!DOCTYPE html>
 <html><head></head><body><div id="app"></div><script type="module" src="/src/main.tsx"></script></body></html>`,
@@ -348,9 +427,17 @@ export default defineConfig({
 
     const html = await readDevHtml(fixtureDir)
 
-    expect(html).toContain("window.IconifyPreload")
-    expect(html).toContain("lucide")
-    expect(html).toContain("box")
+    expect(html).toContain(`"/@id/virtual:iconify-offline:icons"`)
+
+    const server = await createDevServer(fixtureDir)
+    try {
+      const moduleCode = await readDevVirtualModule(server)
+      expect(moduleCode).toContain("@iconify-icon/solid")
+      expect(moduleCode).toContain("lucide")
+      expect(moduleCode).toContain("box")
+    } finally {
+      await server.close()
+    }
   }, 30000)
 
   it("应兼容非默认输出目录并注入注册脚本", async () => {

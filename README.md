@@ -10,7 +10,7 @@ Vite 插件：自动扫描源码中的 Iconify 图标引用，从本地 `@iconif
 
 - 自动扫描 `src` 中的 `.ts`、`.tsx`、`.js`、`.jsx`、`.vue`、`.svelte` 文件
 - 支持 Vue、React、Solid、Svelte 的 Iconify 运行时包自动检测
-- dev 模式通过 `window.IconifyPreload` 在页面启动前预载图标
+- dev 模式通过虚拟模块预注册图标，源码新增图标后自动刷新
 - build 模式生成独立 `_iconify-offline_icons-*.js` chunk，并自动注入最终 HTML
 - 支持非默认输出目录，例如 `dist/client/index.html`
 - 支持手动传入额外图标，覆盖模板字符串、动态拼接等无法静态扫描的场景
@@ -123,13 +123,13 @@ interface IconifyOfflineOptions {
 
 ### dev
 
-dev 模式中不能使用 Rollup 的 `emitFile()` 生成 chunk。插件会在 `transformIndexHtml` 中向页面头部注入：
+dev 模式中不能使用 Rollup 的 `emitFile()` 生成 chunk。插件会在 `transformIndexHtml` 中向页面头部注入虚拟模块入口：
 
 ```html
-<script>window.IconifyPreload = [...];</script>
+<script type="module" src="/@id/virtual:iconify-offline:icons"></script>
 ```
 
-Iconify 运行时初始化时会读取 `window.IconifyPreload`，因此图标能在首屏渲染前进入本地 storage，不需要请求 `https://api.iconify.design` 或 fallback API。
+虚拟模块会导入当前项目使用的 Iconify 运行时包并调用 `addCollection()` 注册图标数据。开发服务器运行期间，如果源码中的图标集合发生变化，插件会重新扫描、失效虚拟模块并触发页面刷新，让新增图标进入本地 storage，不需要重启 dev server。
 
 ### build
 
@@ -226,9 +226,10 @@ iconifyOffline({
 当前测试覆盖：
 
 - Vue build 注入离线 chunk
-- Vue dev 注入 `IconifyPreload`
+- Vue dev 注入图标注册虚拟模块
+- dev 模式源码新增图标后刷新虚拟模块
 - Solid build 自动检测 `@iconify-icon/solid`
-- Solid dev 注入 `IconifyPreload`
+- Solid dev 注入图标注册虚拟模块
 - 非默认输出目录，如 `dist/client`
 - 自定义扫描目录
 - 缺失图标集时不崩溃
@@ -244,7 +245,7 @@ iconifyOffline({
 |---|---|---|
 | 主要目标 | 扫描源码并预注册实际用到的图标 | 管理 Iconify API resources 和本地图标集资源 |
 | 配置方式 | 默认零配置，可自动检测 Vue / React / Solid / Svelte | 需要配置 `resources`、`local`、`icons` 等资源选项 |
-| dev 模式 | 注入 `window.IconifyPreload`，启动前预载图标数据 | 注入 `IconifyProviders`，让运行时按配置资源加载 |
+| dev 模式 | 注入图标注册虚拟模块，图标集合变化时刷新 | 注入 `IconifyProviders`，让运行时按配置资源加载 |
 | build 模式 | 生成 `_iconify-offline_icons-*.js` 注册 chunk 并注入 HTML | 复制本地图标 JSON 到输出目录，并替换/配置资源路径 |
 | 图标裁剪 | 自动按源码中出现的字符串字面量裁剪 | 可通过 `icons` 选项手动指定需要保留的图标 |
 | 本地资源 | 不复制整套图标集，只内嵌用到的数据 | 支持复制 `@iconify/json` / `@iconify-json/*` 到输出目录 |

@@ -15,7 +15,7 @@ import fs from "node:fs"
 import { createRequire } from "node:module"
 import path from "node:path"
 
-import type { Plugin } from "vite"
+import type { Plugin, ViteDevServer } from "vite"
 
 // ---------------------------------------------------------------------------
 // 类型定义
@@ -137,6 +137,11 @@ export const SKIP_PREFIXES = new Set([
 /** prefix -> Set<iconName> */
 export const collectedIcons = new Map<string, Set<string>>()
 let preloadCollections: IconifyJSON[] = []
+
+interface IconRegistrySnapshot {
+  collections: IconifyJSON[]
+  signature: string
+}
 
 /** 清空已收集的图标（供测试使用） */
 export function clearCollectedIcons(): void {
@@ -317,6 +322,29 @@ function buildPreloadCollections(rootDir: string, verbose: boolean): IconifyJSON
   return collections
 }
 
+function createSnapshot(collections: IconifyJSON[]): IconRegistrySnapshot {
+  return {
+    collections,
+    signature: JSON.stringify(collections),
+  }
+}
+
+function generateIconRegistrationModule(collections: IconifyJSON[], pkgName: string): string {
+  if (collections.length === 0) return ""
+
+  const addCollectionCalls = collections
+    .map(c => `addCollection(${JSON.stringify(c)});`)
+    .join("\n")
+
+  const disableLoaderCalls = collections
+    .map(c => `setCustomIconsLoader(() => ({ prefix: ${JSON.stringify(c.prefix)}, icons: {} }), ${JSON.stringify(c.prefix)});`)
+    .join("\n")
+
+  const importFrom = pkgName.replace(/\/offline$/, "")
+
+  return `import { addCollection, setCustomIconsLoader } from "${importFrom}";\n${addCollectionCalls}\n${disableLoaderCalls}\n`
+}
+
 // ---------------------------------------------------------------------------
 // Vite 插件
 // ---------------------------------------------------------------------------
@@ -355,6 +383,8 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
   let rootDir: string
   let pkgName = userPkg  // 用户显式指定优先，未指定则 auto-detect
   let command: "serve" | "build" = "build"
+  let server: ViteDevServer | undefined
+  let snapshot: IconRegistrySnapshot = createSnapshot([])
 
   function findFiles(dir: string, predicate: (filePath: string) => boolean): string[] {
     let entries: fs.Dirent[]
@@ -404,6 +434,50 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
     }
   }
 
+  function getTargetDir(): string {
+    return customScanDir
+      ? path.resolve(rootDir, customScanDir)
+      : path.join(rootDir, "src")
+  }
+
+  function isSourceFile(filePath: string): boolean {
+    return /\.(tsx?|jsx?|vue|svelte)$/.test(filePath)
+  }
+
+  function isInTargetDir(filePath: string): boolean {
+    const relative = path.relative(getTargetDir(), filePath)
+    return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative)
+  }
+
+  function refreshSnapshot(): boolean {
+    const previousSignature = snapshot.signature
+
+    collectedIcons.clear()
+    preloadCollections = []
+
+    const targetDir = getTargetDir()
+
+    if (fs.existsSync(targetDir)) {
+      scanDir(targetDir)
+    } else if (verbose) {
+      console.warn(`[iconify-offline] 扫描目录不存在: ${targetDir}`)
+    }
+
+    for (const icon of icons) {
+      collectIcon(icon)
+    }
+
+    const total = Array.from(collectedIcons.values()).reduce((s, v) => s + v.size, 0)
+    if (verbose) {
+      console.log(`[iconify-offline] 扫描到 ${total} 个图标引用，${collectedIcons.size} 个图标集`)
+    }
+
+    preloadCollections = buildPreloadCollections(rootDir, verbose)
+    snapshot = createSnapshot(preloadCollections)
+
+    return snapshot.signature !== previousSignature
+  }
+
   /** 从 Vite 插件列表自动检测框架 */
   function detectPackageFromPlugins(plugins: readonly any[]): string | null {
     for (const p of plugins) {
@@ -433,30 +507,12 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
       }
     },
 
+    configureServer(viteServer) {
+      server = viteServer
+    },
+
     buildStart() {
-      collectedIcons.clear()
-      preloadCollections = []
-
-      const targetDir = customScanDir
-        ? path.resolve(rootDir, customScanDir)
-        : path.join(rootDir, "src")
-
-      if (fs.existsSync(targetDir)) {
-        scanDir(targetDir)
-      } else if (verbose) {
-        console.warn(`[iconify-offline] 扫描目录不存在: ${targetDir}`)
-      }
-
-      for (const icon of icons) {
-        collectIcon(icon)
-      }
-
-      const total = Array.from(collectedIcons.values()).reduce((s, v) => s + v.size, 0)
-      if (verbose) {
-        console.log(`[iconify-offline] 扫描到 ${total} 个图标引用，${collectedIcons.size} 个图标集`)
-      }
-
-      preloadCollections = buildPreloadCollections(rootDir, verbose)
+      refreshSnapshot()
 
       if (preloadCollections.length > 0 && command === "build") {
         this.emitFile({
@@ -476,7 +532,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
       return [
         {
           tag: "script",
-          children: `window.IconifyPreload = ${JSON.stringify(preloadCollections)};`,
+          attrs: { type: "module", src: `/@id/${VIRTUAL_MODULE_ID}` },
           injectTo: "head-prepend",
         },
       ]
@@ -489,21 +545,23 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
 
     load(id) {
       if (id !== RESOLVED_VIRTUAL_MODULE_ID) return
-      if (preloadCollections.length === 0) return ""
+      return generateIconRegistrationModule(snapshot.collections, pkgName!)
+    },
 
-      const addCollectionCalls = preloadCollections
-        .map(c => `addCollection(${JSON.stringify(c)});`)
-        .join("\n")
+    handleHotUpdate(ctx) {
+      if (command !== "serve" || !isSourceFile(ctx.file) || !isInTargetDir(ctx.file)) return
 
-      const disableLoaderCalls = preloadCollections
-        .map(c => `setCustomIconsLoader(() => ({ prefix: ${JSON.stringify(c.prefix)}, icons: {} }), ${JSON.stringify(c.prefix)});`)
-        .join("\n")
+      const changed = refreshSnapshot()
+      if (!changed) return
 
-      // 从主包导入 addCollection，与 Icon 组件共享同一 storage
-      // configResolved 保证 pkgName 已赋值，用 ! 通知 TS
-      const importFrom = pkgName!.replace(/\/offline$/, "")
+      const module = ctx.server.moduleGraph.getModuleById(RESOLVED_VIRTUAL_MODULE_ID)
+      if (module) {
+        ctx.server.moduleGraph.invalidateModule(module)
+      }
 
-      return `import { addCollection, setCustomIconsLoader } from "${importFrom}";\n${addCollectionCalls}\n${disableLoaderCalls}\n`
+      const viteServer = server || ctx.server
+      viteServer.ws.send({ type: "full-reload" })
+      return []
     },
 
     // 构建完成后，将 chunk 注入到实际输出目录中的 index.html
