@@ -4,7 +4,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/vite-plugin-iconify-offline)](https://npmx.dev/package/vite-plugin-iconify-offline)
 [![npm license](https://img.shields.io/npm/l/vite-plugin-iconify-offline)](https://npmx.dev/package/vite-plugin-iconify-offline)
 
-Vite 插件：自动扫描源码中的 Iconify 图标引用，从本地 `@iconify-json/*` 图标集提取实际用到的数据，并在 dev / build 中预注册到 Iconify 运行时，避免浏览器再向 Iconify API 拉取图标。
+Vite 插件：自动扫描源码中的 Iconify 图标引用，从本地 `@iconify-json/*` 或 `@iconify/json` 图标集提取实际用到的数据，并在 dev / build 中预注册到 Iconify 运行时，避免浏览器再向 Iconify API 拉取图标。
 
 ## 特性
 
@@ -25,11 +25,19 @@ npm i -D vite-plugin-iconify-offline
 npm i -D @iconify-json/lucide
 ```
 
-按需安装你的项目实际使用的图标集：
+推荐按需安装你的项目实际使用的图标集：
 
 ```bash
 npm i -D @iconify-json/lucide @iconify-json/radix-icons @iconify-json/mdi
 ```
+
+如果项目已经安装 Iconify 全量大包，也可以直接使用：
+
+```bash
+npm i -D @iconify/json
+```
+
+插件会优先读取 `@iconify-json/{prefix}/icons.json`，找不到时再从 `@iconify/json/json/{prefix}.json` 读取对应图标集。对于应用项目，仍建议优先使用 `@iconify-json/*` 小包，安装体积更小。
 
 ## 使用
 
@@ -216,10 +224,16 @@ iconifyOffline({
 如果出现：
 
 ```text
-[iconify-offline] 未找到图标集: @iconify-json/mdi，请安装后重试
+[iconify-offline] 未找到图标集: @iconify-json/mdi 或 @iconify/json，请安装后重试
 ```
 
-说明源码中使用了 `mdi:*`，但项目没有安装 `@iconify-json/mdi`。安装对应图标集即可。
+说明源码中使用了 `mdi:*`，但项目没有安装可用的 `mdi` 图标集。安装对应小包或全量大包即可：
+
+```bash
+npm i -D @iconify-json/mdi
+# 或
+npm i -D @iconify/json
+```
 
 ## 测试覆盖
 
@@ -233,6 +247,7 @@ iconifyOffline({
 - 非默认输出目录，如 `dist/client`
 - 自定义扫描目录
 - 缺失图标集时不崩溃
+- 从 `@iconify/json` 大包读取图标集
 - 图标别名解析和误报过滤
 
 ## 与 `@tomjs/vite-plugin-iconify` 对比

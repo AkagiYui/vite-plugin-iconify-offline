@@ -6,7 +6,7 @@
  *
  * 原理：
  * 1. 扫描源码中 `name="prefix:icon"` 和 `icon: 'prefix:icon'` 等模式
- * 2. 从本地 @iconify-json/* 包读取图标数据，仅保留用到的图标
+ * 2. 从本地 @iconify-json/* 或 @iconify/json 包读取图标数据，仅保留用到的图标
  * 3. 通过 this.emitFile 生成独立 chunk，自动被 Vite 打包
  * 4. chunk 中的 import { addCollection } + addCollection({...}) 经过标准构建通道，不会被 tree-shake
  */
@@ -246,7 +246,14 @@ function loadIconSet(prefix: string, rootDir: string): IconifyJSON | null {
     // 忽略
   }
 
-  console.warn(`[iconify-offline] 未找到图标集: @iconify-json/${prefix}，请安装后重试`)
+  try {
+    const resolved = require.resolve(`@iconify/json/json/${prefix}.json`, { paths: [rootDir] })
+    return JSON.parse(fs.readFileSync(resolved, "utf-8"))
+  } catch {
+    // 忽略
+  }
+
+  console.warn(`[iconify-offline] 未找到图标集: @iconify-json/${prefix} 或 @iconify/json，请安装后重试`)
   return null
 }
 

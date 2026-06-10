@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from "vitest"
 import { build, createServer, type ViteDevServer } from "vite"
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, symlinkSync, mkdirSync, readdirSync } from "node:fs"
-import { join, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 
@@ -23,21 +23,61 @@ function mkdirp(dir: string): void {
 /**
  * 创建临时 fixture 项目，返回项目根目录路径。
  */
-function createFixture(files: Record<string, string>): string {
-  const dir = mkdtempSync(join(tmpdir(), "iconify-e2e-"))
-  cleanupDirs.push(dir)
+function linkNodeModule(fixtureDir: string, packageName: string): void {
+  const parts = packageName.split("/")
+  const target = resolve(projectRoot, "node_modules", ...parts)
+  const linkPath = join(fixtureDir, "node_modules", ...parts)
+  mkdirp(dirname(linkPath))
+  symlinkSync(target, linkPath, "dir")
+}
 
+function writeFixtureFiles(dir: string, files: Record<string, string>): void {
   for (const [relPath, content] of Object.entries(files)) {
     const fullPath = join(dir, relPath)
     mkdirp(join(fullPath, ".."))
     writeFileSync(fullPath, content)
   }
+}
 
-  // 软链接 node_modules 使插件能解析 @iconify-json 和 @vitejs/plugin-vue
-  const nmTarget = resolve(projectRoot, "node_modules")
-  symlinkSync(nmTarget, join(dir, "node_modules"), "dir")
+function createFixture(files: Record<string, string>, packages?: string[]): string {
+  const dir = mkdtempSync(join(tmpdir(), "iconify-e2e-"))
+  cleanupDirs.push(dir)
+
+  writeFixtureFiles(dir, files)
+
+  if (packages) {
+    mkdirp(join(dir, "node_modules"))
+    for (const packageName of packages) {
+      linkNodeModule(dir, packageName)
+    }
+  } else {
+    // 软链接 node_modules 使插件能解析 @iconify-json 和 @vitejs/plugin-vue
+    const nmTarget = resolve(projectRoot, "node_modules")
+    symlinkSync(nmTarget, join(dir, "node_modules"), "dir")
+  }
 
   return dir
+}
+
+function createFixtureWithAncestorNodeModules(
+  appFiles: Record<string, string>,
+  ancestorFiles: Record<string, string>,
+  packages: string[],
+): string {
+  const parentDir = mkdtempSync(join(tmpdir(), "iconify-e2e-parent-"))
+  cleanupDirs.push(parentDir)
+
+  const appDir = join(parentDir, "app")
+  mkdirp(appDir)
+  writeFixtureFiles(appDir, appFiles)
+  writeFixtureFiles(parentDir, ancestorFiles)
+
+  mkdirp(join(appDir, "node_modules"))
+  for (const packageName of packages) {
+    linkNodeModule(appDir, packageName)
+  }
+
+  return appDir
 }
 
 /**
@@ -194,6 +234,104 @@ export default defineConfig({
     // mdi 图标集未安装，不应注入 addCollection
     expect(html).not.toContain("_iconify-offline_icons")
     expect(chunk).toBeNull()
+  }, 30000)
+
+  it("应支持从 @iconify/json 大包读取图标集", async () => {
+    const fixtureDir = createFixture({
+      "index.html": `<!DOCTYPE html>
+<html><head><title>Test</title></head>
+<body><div id="app"></div><script type="module" src="/src/main.ts"></script></body>
+</html>`,
+      "src/main.ts": `import { createApp } from "vue"
+import App from "./App.vue"
+createApp(App).mount("#app")`,
+      "src/App.vue": `<template>
+  <Icon name="lucide:sun" />
+</template>
+<script setup lang="ts">
+import { Icon } from "@iconify/vue"
+</script>`,
+      "node_modules/@iconify/json/json/lucide.json": JSON.stringify({
+        prefix: "lucide",
+        icons: {
+          sun: {
+            body: '<circle cx="12" cy="12" r="5"/>',
+          },
+        },
+        width: 24,
+        height: 24,
+      }),
+      "vite.config.ts": `import { defineConfig } from "vite"
+import vue from "@vitejs/plugin-vue"
+import iconifyOffline from "${resolve(projectRoot, "src/index.ts") }"
+
+export default defineConfig({
+  plugins: [vue(), iconifyOffline({ verbose: false })],
+})`,
+    }, ["vite", "@vitejs/plugin-vue", "vue", "@iconify/vue"])
+
+    const distDir = await buildFixture(fixtureDir)
+    const html = readHtml(distDir)
+    const chunk = readIconChunk(distDir)
+
+    expect(html).toContain("_iconify-offline_icons")
+    expect(chunk).not.toBeNull()
+    expect(chunk!).toMatch(/lucide/)
+    expect(chunk!).toMatch(/sun/)
+    expect(chunk!).toMatch(/circle/)
+  }, 30000)
+
+  it("应支持通过 require.resolve 从上级 node_modules 解析 @iconify/json", async () => {
+    const fixtureDir = createFixtureWithAncestorNodeModules({
+      "index.html": `<!DOCTYPE html>
+<html><head><title>Test</title></head>
+<body><div id="app"></div><script type="module" src="/src/main.ts"></script></body>
+</html>`,
+      "src/main.ts": `import { createApp } from "vue"
+import App from "./App.vue"
+createApp(App).mount("#app")`,
+      "src/App.vue": `<template>
+  <Icon name="fixture-icons:search" />
+</template>
+<script setup lang="ts">
+import { Icon } from "@iconify/vue"
+</script>`,
+      "vite.config.ts": `import { defineConfig } from "vite"
+import vue from "@vitejs/plugin-vue"
+import iconifyOffline from "${resolve(projectRoot, "src/index.ts") }"
+
+export default defineConfig({
+  plugins: [vue(), iconifyOffline({ verbose: false })],
+})`,
+    }, {
+      "node_modules/@iconify/json/package.json": JSON.stringify({
+        name: "@iconify/json",
+        version: "0.0.0-test",
+        exports: {
+          "./*": "./*",
+        },
+      }),
+      "node_modules/@iconify/json/json/fixture-icons.json": JSON.stringify({
+        prefix: "fixture-icons",
+        icons: {
+          search: {
+            body: '<path d="M1 1h10v10H1z"/>',
+          },
+        },
+        width: 12,
+        height: 12,
+      }),
+    }, ["vite", "@vitejs/plugin-vue", "vue", "@iconify/vue"])
+
+    const distDir = await buildFixture(fixtureDir)
+    const html = readHtml(distDir)
+    const chunk = readIconChunk(distDir)
+
+    expect(html).toContain("_iconify-offline_icons")
+    expect(chunk).not.toBeNull()
+    expect(chunk!).toMatch(/fixture-icons/)
+    expect(chunk!).toMatch(/search/)
+    expect(chunk!).toMatch(/M1 1h10v10H1z/)
   }, 30000)
 
   it("应在没有图标引用的项目中不注入任何内容", async () => {
