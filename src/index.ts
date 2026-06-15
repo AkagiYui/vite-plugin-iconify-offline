@@ -388,6 +388,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
   } = options
 
   let rootDir: string
+  let base = "/"  // Vite 的 base，用于生成注入脚本的绝对 URL
   let pkgName = userPkg  // 用户显式指定优先，未指定则 auto-detect
   let command: "serve" | "build" = "build"
   let server: ViteDevServer | undefined
@@ -413,13 +414,28 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
     return files
   }
 
-  function injectScriptToHtml(htmlPath: string, chunkPath: string): boolean {
+  /**
+   * 计算注入脚本的 src。
+   * 绝对 base（默认 "/"，或 "/sub/"、完整 URL）：用 base 拼接「chunk 相对输出根目录」的路径，
+   *   得到形如 /assets/x.js——对根页面与（SSG 预渲染的）子路径页面都正确，
+   *   这正是 Vite 处理自身资源 URL 的方式。
+   * 相对 base（"" / "./" / "./xxx"）：回退到「相对 HTML 文件」的路径（与 Vite 相对 base 行为一致）。
+   */
+  function resolveScriptSrc(htmlPath: string, chunkPath: string, outDir: string): string {
+    if (base === "" || base === "./" || base.startsWith("./")) {
+      const rel = path.relative(path.dirname(htmlPath), chunkPath).split(path.sep).join("/")
+      return rel.startsWith(".") ? rel : `./${rel}`
+    }
+    const relToOut = path.relative(outDir, chunkPath).split(path.sep).join("/")
+    return `${base.endsWith("/") ? base : `${base}/`}${relToOut}`
+  }
+
+  function injectScriptToHtml(htmlPath: string, chunkPath: string, outDir: string): boolean {
     let html = fs.readFileSync(htmlPath, "utf-8")
     if (html.includes(path.basename(chunkPath))) return false
 
-    const scriptSrc = path.relative(path.dirname(htmlPath), chunkPath).split(path.sep).join("/")
-    const normalizedSrc = scriptSrc.startsWith(".") ? scriptSrc : `./${scriptSrc}`
-    const scriptTag = `    <script type="module" crossorigin src="${normalizedSrc}"></script>\n`
+    const src = resolveScriptSrc(htmlPath, chunkPath, outDir)
+    const scriptTag = `    <script type="module" crossorigin src="${src}"></script>\n`
     html = html.replace("</head>", scriptTag + "</head>")
     fs.writeFileSync(htmlPath, html)
     return true
@@ -435,7 +451,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
     for (const htmlPath of htmlFiles) {
       const htmlDir = path.dirname(htmlPath)
       const chunkPath = chunkFiles.find(filePath => path.dirname(filePath).startsWith(htmlDir)) || chunkFiles[0]
-      if (injectScriptToHtml(htmlPath, chunkPath) && verbose) {
+      if (injectScriptToHtml(htmlPath, chunkPath, outDir) && verbose) {
         console.log(`[iconify-offline] 已注入图标注册脚本: ${path.basename(chunkPath)}`)
       }
     }
@@ -503,6 +519,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
 
     configResolved(config) {
       rootDir = config.root
+      base = config.base
       command = config.command
 
       // 用户未显式指定 package 时，自动从 Vite 插件检测框架
@@ -601,7 +618,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
       if (!htmlPath) return
 
       const chunkPath = path.join(outDir, chunkFile)
-      const didInject = injectScriptToHtml(htmlPath, chunkPath)
+      const didInject = injectScriptToHtml(htmlPath, chunkPath, outDir)
 
       if (didInject && verbose) {
         console.log(`[iconify-offline] 已注入图标注册脚本: ${path.basename(chunkFile)}`)

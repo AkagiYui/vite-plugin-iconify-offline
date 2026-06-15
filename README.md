@@ -12,6 +12,7 @@ Vite 插件：自动扫描源码中的 Iconify 图标引用，从本地 `@iconif
 - 支持 Vue、React、Solid、Svelte 的 Iconify 运行时包自动检测
 - dev 模式通过虚拟模块预注册图标，源码新增图标后自动刷新
 - build 模式生成独立 `_iconify-offline_icons-*.js` chunk，并自动注入最终 HTML
+- 注入脚本使用绝对（`base` 感知）路径，兼容 SSG 预渲染的子路径页面、多页应用与自定义 `base` / 子路径部署
 - 支持非默认输出目录，例如 `dist/client/index.html`
 - 支持手动传入额外图标，覆盖模板字符串、动态拼接等无法静态扫描的场景
 - 只打包实际用到的图标，包含别名解析
@@ -151,6 +152,8 @@ setCustomIconsLoader(() => ({ prefix: "lucide", icons: {} }), "lucide")
 ```
 
 插件会把生成的 `_iconify-offline_icons-*.js` 注入到最终 `index.html` 中，并支持 `dist/index.html`、`dist/client/index.html` 等常见输出结构。
+
+注入脚本的 `src` 按 Vite 的 `base` 生成**绝对路径**（默认 `/` 下形如 `/assets/_iconify-offline_icons-*.js`），因此从子路径页面（如 SSG 预渲染的 `dist/about/index.html`）加载也不会 404；当 `base` 为相对（`./`）时则回退为相对 HTML 的路径。
 
 ## 运行时包必须一致
 

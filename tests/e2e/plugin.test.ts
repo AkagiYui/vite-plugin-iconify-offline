@@ -158,6 +158,12 @@ function readHtmlAt(dir: string, subdir: string): string {
   return readFileSync(join(dir, subdir, "index.html"), "utf-8")
 }
 
+/** 从 HTML 中提取 iconify 注册脚本的 src。 */
+function getIconScriptSrc(html: string): string | null {
+  const m = html.match(/<script[^>]*src="([^"]*_iconify-offline_icons[^"]*)"/)
+  return m ? m[1] : null
+}
+
 // ─────────────────────────── 测试用例 ───────────────────────────
 
 describe("iconifyOffline 集成测试", () => {
@@ -200,6 +206,63 @@ export default defineConfig({
     expect(chunk).not.toBeNull()
     expect(chunk!).toMatch(/lucide/)
     expect(chunk!).toMatch(/sun/)
+  }, 30000)
+
+  it("默认 base 下注入脚本应为绝对路径（兼容 SSG 子路径页面）", async () => {
+    const fixtureDir = createFixture({
+      "index.html": `<!DOCTYPE html>
+<html><head><title>Test</title></head>
+<body><div id="app"></div><script type="module" src="/src/main.ts"></script></body>
+</html>`,
+      "src/main.ts": `import { createApp } from "vue"
+import App from "./App.vue"
+createApp(App).mount("#app")`,
+      "src/App.vue": `<template><Icon name="lucide:sun" /></template>
+<script setup lang="ts">
+import { Icon } from "@iconify/vue"
+</script>`,
+      "vite.config.ts": `import { defineConfig } from "vite"
+import vue from "@vitejs/plugin-vue"
+import iconifyOffline from "${resolve(projectRoot, "src/index.ts")}"
+
+export default defineConfig({
+  plugins: [vue(), iconifyOffline({ verbose: false })],
+})`,
+    })
+
+    const src = getIconScriptSrc(readHtml(await buildFixture(fixtureDir)))
+    expect(src).not.toBeNull()
+    // 必须是绝对路径 /assets/...；相对 ./assets/... 在 SSG 子路径页面会解析成 404
+    expect(src!.startsWith("/assets/")).toBe(true)
+    expect(src!.startsWith("./")).toBe(false)
+  }, 30000)
+
+  it("应遵循自定义 base 前缀", async () => {
+    const fixtureDir = createFixture({
+      "index.html": `<!DOCTYPE html>
+<html><head><title>Test</title></head>
+<body><div id="app"></div><script type="module" src="/src/main.ts"></script></body>
+</html>`,
+      "src/main.ts": `import { createApp } from "vue"
+import App from "./App.vue"
+createApp(App).mount("#app")`,
+      "src/App.vue": `<template><Icon name="lucide:sun" /></template>
+<script setup lang="ts">
+import { Icon } from "@iconify/vue"
+</script>`,
+      "vite.config.ts": `import { defineConfig } from "vite"
+import vue from "@vitejs/plugin-vue"
+import iconifyOffline from "${resolve(projectRoot, "src/index.ts")}"
+
+export default defineConfig({
+  base: "/sub/",
+  plugins: [vue(), iconifyOffline({ verbose: false })],
+})`,
+    })
+
+    const src = getIconScriptSrc(readHtml(await buildFixture(fixtureDir)))
+    expect(src).not.toBeNull()
+    expect(src!.startsWith("/sub/assets/")).toBe(true)
   }, 30000)
 
   it("应放过不存在的图标集而不崩溃", async () => {
