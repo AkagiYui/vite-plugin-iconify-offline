@@ -435,8 +435,16 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
     if (html.includes(path.basename(chunkPath))) return false
 
     const src = resolveScriptSrc(htmlPath, chunkPath, outDir)
-    const scriptTag = `    <script type="module" crossorigin src="${src}"></script>\n`
-    html = html.replace("</head>", scriptTag + "</head>")
+    const scriptTag = `<script type="module" crossorigin src="${src}"></script>`
+    // 注入到 <head> 起始处（应用入口脚本之前），保证图标注册先于应用渲染：
+    // 否则应用会先创建 iconify-icon 元素、图标注册晚到，造成偶发图标缺失
+    // （Service Worker 等改变资源加载时序后尤其明显）。与 dev 模式 head-prepend 行为一致。
+    const headOpen = html.match(/<head[^>]*>/)
+    if (headOpen) {
+      html = html.replace(headOpen[0], `${headOpen[0]}\n    ${scriptTag}`)
+    } else {
+      html = html.replace("</head>", `    ${scriptTag}\n</head>`) // 兜底
+    }
     fs.writeFileSync(htmlPath, html)
     return true
   }
