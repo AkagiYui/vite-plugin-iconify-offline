@@ -16,7 +16,7 @@ Vite 插件：自动扫描源码中的 Iconify 图标引用，从本地 `@iconif
 - 支持非默认输出目录，例如 `dist/client/index.html`
 - 支持手动传入额外图标，覆盖模板字符串、动态拼接等无法静态扫描的场景
 - 只打包实际用到的图标，包含别名解析
-- 内置过滤 Tailwind / Vue / Vite 常见 `prefix:name` 误报
+- 内置过滤 Tailwind / Vue / Vite / Open Graph / Twitter Card 常见 `prefix:name` 误报，并支持通过 `exclude` 自定义排除前缀
 - 对已预注册的图标集禁用自定义 loader 回退，减少运行时网络请求
 
 ## 安装
@@ -117,6 +117,7 @@ interface IconifyOfflineOptions {
   package?: string
   scanDir?: string
   icons?: string[]
+  exclude?: string[]
   verbose?: boolean
 }
 ```
@@ -126,6 +127,7 @@ interface IconifyOfflineOptions {
 | `package` | `string` | 自动检测，失败时为 `@iconify/vue` | 注册图标数据时导入的 Iconify 运行时包 |
 | `scanDir` | `string` | `"src"` | 扫描目录，相对于 Vite root。可设为 `"."` 扫描整个项目 |
 | `icons` | `string[]` | `[]` | 手动指定额外要离线化的图标，例如 `["lucide:sun"]` |
+| `exclude` | `string[]` | `[]` | 自定义要排除的 `prefix:` 前缀，跳过对应的 `prefix:name` 误报，例如 `["og", "twitter"]` |
 | `verbose` | `boolean` | `true` | 是否输出扫描、预注册、注入等日志 |
 
 ## 工作方式
@@ -213,6 +215,25 @@ iconifyOffline({
   ],
 })
 ```
+
+## 误报过滤
+
+插件按 `prefix:name` 模式扫描字符串字面量，部分非图标写法也会命中该模式。已内置过滤常见误报，包括 Tailwind 修饰符（`hover:`、`sm:` 等）、Vue 事件（`update:`）、Vite 虚拟模块（`virtual:`）以及 Open Graph / Twitter Card 的 meta 前缀（`og:`、`twitter:`）：
+
+```ts
+setMeta("og:title", title)        // 不会被识别为图标
+setMeta("twitter:description", d)  // 不会被识别为图标
+```
+
+如果项目里还有其他会触发误报的前缀，可以通过 `exclude` 自定义排除（前缀可带或不带尾部冒号）：
+
+```ts
+iconifyOffline({
+  exclude: ["og", "twitter", "my-prefix"],
+})
+```
+
+配置后，扫描时会跳过所有匹配这些前缀的 `prefix:name` 字符串，不再尝试解析对应的图标集。
 
 ## 日志
 

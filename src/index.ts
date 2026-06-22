@@ -84,6 +84,15 @@ export interface IconifyOfflineOptions {
   icons?: string[]
 
   /**
+   * 自定义要排除的 `prefix:` 前缀列表，用于规避误报。
+   * 配置后，扫描时会跳过所有匹配这些前缀的 `prefix:name` 字符串，
+   * 不再尝试解析对应的图标集。与内置过滤列表（Tailwind / Vue / og / twitter 等）合并生效。
+   * 前缀可带或不带尾部冒号，例如 `["og", "twitter"]` 或 `["og:", "twitter:"]`。
+   * @default []
+   */
+  exclude?: string[]
+
+  /**
    * 是否在控制台输出详细日志。
    * @default true
    */
@@ -128,6 +137,8 @@ export const SKIP_PREFIXES = new Set([
   "update",
   // Vite 虚拟模块 id
   "virtual",
+  // Open Graph / Twitter Card meta property 前缀
+  "og", "twitter",
 ])
 
 // ---------------------------------------------------------------------------
@@ -150,15 +161,18 @@ export function clearCollectedIcons(): void {
 
 /**
  * 收集单个 Iconify 图标引用。
+ *
+ * @param full - 完整的 `prefix:name` 字符串
+ * @param exclude - 用户自定义要排除的前缀集合，与内置 {@link SKIP_PREFIXES} 合并生效
  */
-export function collectIcon(full: string): boolean {
+export function collectIcon(full: string, exclude?: ReadonlySet<string>): boolean {
   const colonIdx = full.indexOf(":")
   if (colonIdx === -1) return false
   const prefix = full.slice(0, colonIdx)
   const iconName = full.slice(colonIdx + 1)
 
-  // 跳过 Tailwind 修饰符 / Vue 事件等误报
-  if (SKIP_PREFIXES.has(prefix)) return false
+  // 跳过 Tailwind 修饰符 / Vue 事件 / og / twitter 等内置误报，以及用户自定义排除的前缀
+  if (SKIP_PREFIXES.has(prefix) || exclude?.has(prefix)) return false
 
   // 跳过 data-[xxx]: 格式的属性修饰符
   if (prefix.endsWith("-") || iconName.startsWith("[")) return false
@@ -176,18 +190,21 @@ export function collectIcon(full: string): boolean {
 
 /**
  * 从源码内容中提取图标引用。
+ *
+ * @param code - 源码文本
+ * @param exclude - 用户自定义要排除的前缀集合
  */
-export function extractIcons(code: string): void {
+export function extractIcons(code: string, exclude?: ReadonlySet<string>): void {
   const matches = code.matchAll(ICON_PATTERN)
   for (const match of matches) {
-    collectIcon(match[1])
+    collectIcon(match[1], exclude)
   }
 }
 
 /**
  * 递归扫描目录，提取图标引用。
  */
-function scanDir(dir: string): void {
+function scanDir(dir: string, exclude?: ReadonlySet<string>): void {
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true })
@@ -203,7 +220,7 @@ function scanDir(dir: string): void {
       if (["node_modules", ".git", "dist", ".output", ".cloudflare", ".vercel", ".next"].includes(entry.name)) {
         continue
       }
-      scanDir(fullPath)
+      scanDir(fullPath, exclude)
       continue
     }
 
@@ -211,7 +228,7 @@ function scanDir(dir: string): void {
     if (/\.(tsx?|jsx?|vue|svelte)$/.test(entry.name)) {
       try {
         const code = fs.readFileSync(fullPath, "utf-8")
-        extractIcons(code)
+        extractIcons(code, exclude)
       } catch {
         // 忽略读取失败的文件
       }
@@ -385,7 +402,13 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
     verbose = true,
     scanDir: customScanDir,
     icons = [],
+    exclude = [],
   } = options
+
+  // 用户自定义排除的前缀，规范化：去除尾部冒号、空白并转小写（图标 prefix 恒为小写）
+  const excludeSet = new Set(
+    exclude.map(p => p.trim().toLowerCase().replace(/:$/, "")).filter(Boolean),
+  )
 
   let rootDir: string
   let base = "/"  // Vite 的 base，用于生成注入脚本的绝对 URL
@@ -489,13 +512,13 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
     const targetDir = getTargetDir()
 
     if (fs.existsSync(targetDir)) {
-      scanDir(targetDir)
+      scanDir(targetDir, excludeSet)
     } else if (verbose) {
       console.warn(`[iconify-offline] 扫描目录不存在: ${targetDir}`)
     }
 
     for (const icon of icons) {
-      collectIcon(icon)
+      collectIcon(icon, excludeSet)
     }
 
     const total = Array.from(collectedIcons.values()).reduce((s, v) => s + v.size, 0)

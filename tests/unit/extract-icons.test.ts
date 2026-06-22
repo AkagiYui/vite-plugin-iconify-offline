@@ -84,6 +84,37 @@ describe("extractIcons", () => {
     expect(collectedIcons.has("update")).toBe(false)
   })
 
+  it("应跳过 Open Graph 前缀 og:", () => {
+    extractIcons(`setMeta('og:title', title, true)\nsetMeta('og:description', desc, true)`)
+    expect(collectedIcons.has("og")).toBe(false)
+  })
+
+  it("应跳过 Twitter Card 前缀 twitter:", () => {
+    extractIcons(`setMeta('twitter:title', title)\nsetMeta('twitter:description', desc)`)
+    expect(collectedIcons.has("twitter")).toBe(false)
+  })
+
+  // ── 自定义 exclude ──
+
+  it("collectIcon 应跳过用户自定义排除的前缀", () => {
+    const exclude = new Set(["custom"])
+    expect(collectIcon("custom:thing", exclude)).toBe(false)
+    expect(collectedIcons.has("custom")).toBe(false)
+  })
+
+  it("extractIcons 应跳过用户自定义排除的前缀但保留正常图标", () => {
+    const exclude = new Set(["foo", "bar"])
+    extractIcons(`"foo:a" "bar:b" "lucide:sun"`, exclude)
+    expect(collectedIcons.has("foo")).toBe(false)
+    expect(collectedIcons.has("bar")).toBe(false)
+    expect(collectedIcons.get("lucide")).toEqual(new Set(["sun"]))
+  })
+
+  it("未传 exclude 时自定义前缀应被正常收集", () => {
+    extractIcons(`"foo:a"`)
+    expect(collectedIcons.get("foo")).toContain("a")
+  })
+
   it("应跳过 data-[xxx]: 格式的属性修饰符", () => {
     extractIcons(`class="data-[active]:bg-red"`)
     // "data" 在 SKIP_PREFIXES 中
