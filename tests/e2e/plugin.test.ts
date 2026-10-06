@@ -698,4 +698,225 @@ export default defineConfig({
     expect(html).toContain("_iconify-offline_icons")
     expect(chunkFile).toBeTruthy()
   }, 30000)
+
+  it("disableApi：构建产物在预注册之前禁用 API，且注册脚本先于应用入口", async () => {
+    const fixtureDir = createFixture({
+      "index.html": `<!DOCTYPE html>
+<html><head><title>Test</title></head>
+<body><div id="app"></div><script type="module" src="/src/main.ts"></script></body>
+</html>`,
+      "src/main.ts": `import { createApp } from "vue"
+import App from "./App.vue"
+createApp(App).mount("#app")`,
+      "src/App.vue": `<template><Icon icon="lucide:sun" /></template>
+<script setup lang="ts">
+import { Icon } from "@iconify/vue"
+</script>`,
+      "vite.config.ts": `import { defineConfig } from "vite"
+import vue from "@vitejs/plugin-vue"
+import iconifyOffline from "${resolve(projectRoot, "src/index.ts")}"
+
+export default defineConfig({
+  plugins: [vue(), iconifyOffline({ verbose: false, disableApi: true })],
+})`,
+    })
+
+    const distDir = await buildFixture(fixtureDir)
+    const html = readHtml(distDir)
+    const chunk = readIconChunk(distDir)
+
+    expect(chunk).not.toBeNull()
+    // 压缩后 _api 会被改名，但 setFetch 方法名和 404 都还在
+    expect(chunk!).toMatch(/\.setFetch\(/)
+    expect(chunk!).toContain("status:404")
+    expect(chunk!).toContain("iconify-offline: API disabled")
+    expect(chunk!.indexOf(".setFetch(")).toBeLessThan(chunk!.indexOf("lucide"))
+
+    const scripts = [...html.matchAll(/<script[^>]*src="([^"]+)"/g)].map(m => m[1])
+    expect(scripts[0]).toContain("_iconify-offline_icons")
+    expect(scripts.findIndex(src => src.includes("/assets/index"))).toBeGreaterThan(0)
+  }, 30000)
+
+  it("disableApi：没有扫描到任何图标时仍注入禁用脚本", async () => {
+    const fixtureDir = createFixture({
+      "index.html": `<!DOCTYPE html>
+<html><head><title>Test</title></head>
+<body><script type="module" src="/src/main.ts"></script></body>
+</html>`,
+      "src/main.ts": `import { loadIcon } from "@iconify/vue"
+// 名字是拼出来的，扫描扫不到
+const set = "md" + "i"
+loadIcon(set + ":home")`,
+      "vite.config.ts": `import { defineConfig } from "vite"
+import iconifyOffline from "${resolve(projectRoot, "src/index.ts")}"
+
+export default defineConfig({
+  plugins: [iconifyOffline({ verbose: false, disableApi: true, package: "@iconify/vue" })],
+})`,
+    })
+
+    const distDir = await buildFixture(fixtureDir)
+    const html = readHtml(distDir)
+    const chunk = readIconChunk(distDir)
+
+    expect(getIconScriptSrc(html)).toMatch(/^\/assets\/_iconify-offline_icons/)
+    expect(chunk).not.toBeNull()
+    expect(chunk!).toMatch(/\.setFetch\(/)
+    expect(chunk!).not.toContain("addCollection")
+  }, 30000)
+
+  it("disableApi：dev 模式的虚拟模块同样禁用 API（包括没有图标时）", async () => {
+    const withIcons = createFixture({
+      "index.html": `<!DOCTYPE html>
+<html><head></head><body><script type="module" src="/src/main.ts"></script></body></html>`,
+      "src/main.ts": `import { createApp } from "vue"
+import App from "./App.vue"
+createApp(App).mount("#app")`,
+      "src/App.vue": `<template><Icon icon="lucide:shield-check" /></template>
+<script setup lang="ts">
+import { Icon } from "@iconify/vue"
+</script>`,
+      "vite.config.ts": `import { defineConfig } from "vite"
+import vue from "@vitejs/plugin-vue"
+import iconifyOffline from "${resolve(projectRoot, "src/index.ts")}"
+
+export default defineConfig({
+  plugins: [vue(), iconifyOffline({ verbose: false, disableApi: true })],
+})`,
+    })
+    const server = await createDevServer(withIcons)
+    try {
+      const moduleCode = await readDevVirtualModule(server)
+      expect(moduleCode).toMatch(/^import \{ _api, addCollection, setCustomIconsLoader \} from "@iconify\/vue";\n_api\.setFetch\(/)
+      expect(moduleCode).toContain("shield-check")
+    } finally {
+      await server.close()
+    }
+
+    const noIcons = createFixture({
+      "index.html": `<!DOCTYPE html>
+<html><head></head><body><script type="module" src="/src/main.ts"></script></body></html>`,
+      "src/main.ts": `console.log("no icons here")`,
+      "vite.config.ts": `import { defineConfig } from "vite"
+import iconifyOffline from "${resolve(projectRoot, "src/index.ts")}"
+
+export default defineConfig({
+  plugins: [iconifyOffline({ verbose: false, disableApi: true, package: "@iconify/vue" })],
+})`,
+    })
+    expect(await readDevHtml(noIcons)).toContain(`"/@id/virtual:iconify-offline:icons"`)
+  }, 30000)
+
+  // ─────────────── 官方离线版入口 ───────────────
+
+  /** 构建产物里所有 JS 拼在一起，用来断言整个包里没有联网代码 */
+  function readAllJs(distDir: string): string {
+    const assetsDir = join(distDir, "assets")
+    return readdirSync(assetsDir).filter(f => f.endsWith(".js")).map(f => readFileSync(join(assetsDir, f), "utf-8")).join("\n")
+  }
+
+  it("Vue 离线版：注册进 @iconify/vue/offline，整个产物没有 Iconify API", async () => {
+    const fixtureDir = createFixture({
+      "index.html": `<!DOCTYPE html>
+<html><head><title>Test</title></head>
+<body><div id="app"></div><script type="module" src="/src/main.ts"></script></body>
+</html>`,
+      "src/main.ts": `import { createApp } from "vue"
+import App from "./App.vue"
+createApp(App).mount("#app")`,
+      "src/App.vue": `<template><Icon icon="lucide:sun" /></template>
+<script setup lang="ts">
+import { Icon } from "@iconify/vue/offline"
+</script>`,
+      "vite.config.ts": `import { defineConfig } from "vite"
+import vue from "@vitejs/plugin-vue"
+import iconifyOffline from "${resolve(projectRoot, "src/index.ts")}"
+
+export default defineConfig({
+  plugins: [vue(), iconifyOffline({ verbose: false, package: "@iconify/vue/offline" })],
+})`,
+    })
+
+    const distDir = await buildFixture(fixtureDir)
+    const chunk = readIconChunk(distDir)
+    const allJs = readAllJs(distDir)
+
+    expect(getIconScriptSrc(readHtml(distDir))).toBeTruthy()
+    expect(chunk).not.toBeNull()
+    expect(chunk!).toContain("lucide")
+    // 0.4.x 会剥掉 /offline 注册进主入口：主入口带着 API 代码一起进包，组件却读不到图标
+    expect(allJs).not.toContain("api.iconify.design")
+    expect(allJs).not.toContain("setCustomIconsLoader")
+  }, 30000)
+
+  it("React 离线版：注册进 @iconify/react/offline，整个产物没有 Iconify API", async () => {
+    const fixtureDir = createFixture({
+      "index.html": `<!DOCTYPE html>
+<html><head><title>Test</title></head>
+<body><script type="module" src="/src/main.ts"></script></body>
+</html>`,
+      "src/main.ts": `import { createElement } from "react"
+import { Icon } from "@iconify/react/offline"
+export const icon = createElement(Icon, { icon: "lucide:sun" })
+console.log(icon)`,
+      "vite.config.ts": `import { defineConfig } from "vite"
+import iconifyOffline from "${resolve(projectRoot, "src/index.ts")}"
+
+export default defineConfig({
+  plugins: [iconifyOffline({ verbose: false, package: "@iconify/react/offline" })],
+})`,
+    })
+
+    const distDir = await buildFixture(fixtureDir)
+    const chunk = readIconChunk(distDir)
+
+    expect(chunk).not.toBeNull()
+    expect(chunk!).toContain("lucide")
+    expect(readAllJs(distDir)).not.toContain("api.iconify.design")
+  }, 30000)
+
+  it("Svelte 离线版：@iconify/svelte/dist/offline-functions 能构建（它没有 setCustomIconsLoader）", async () => {
+    const fixtureDir = createFixture({
+      "index.html": `<!DOCTYPE html>
+<html><head><title>Test</title></head>
+<body><script type="module" src="/src/main.ts"></script></body>
+</html>`,
+      // 只用离线版的函数入口，不编译 .svelte：OfflineIcon.svelte 读的正是这个模块的 storage
+      "src/main.ts": `import { generateIcon } from "@iconify/svelte/dist/offline-functions"
+console.log(generateIcon({ icon: "lucide:sun" }))`,
+      "vite.config.ts": `import { defineConfig } from "vite"
+import iconifyOffline from "${resolve(projectRoot, "src/index.ts")}"
+
+export default defineConfig({
+  plugins: [iconifyOffline({ verbose: false, package: "@iconify/svelte/dist/offline-functions" })],
+})`,
+    })
+
+    const distDir = await buildFixture(fixtureDir)
+    const chunk = readIconChunk(distDir)
+
+    expect(chunk).not.toBeNull()
+    expect(chunk!).toContain("lucide")
+    expect(readAllJs(distDir)).not.toContain("api.iconify.design")
+  }, 30000)
+
+  it("离线版入口 + disableApi 且没有图标：不注入任何东西（没有 API 可禁）", async () => {
+    const fixtureDir = createFixture({
+      "index.html": `<!DOCTYPE html>
+<html><head><title>Test</title></head>
+<body><script type="module" src="/src/main.ts"></script></body>
+</html>`,
+      "src/main.ts": `console.log("no icons here")`,
+      "vite.config.ts": `import { defineConfig } from "vite"
+import iconifyOffline from "${resolve(projectRoot, "src/index.ts")}"
+
+export default defineConfig({
+  plugins: [iconifyOffline({ verbose: false, disableApi: true, package: "@iconify/vue/offline" })],
+})`,
+    })
+
+    const distDir = await buildFixture(fixtureDir)
+    expect(readHtml(distDir)).not.toContain("_iconify-offline_icons")
+    expect(readIconChunk(distDir)).toBeNull()
+  }, 30000)
 })

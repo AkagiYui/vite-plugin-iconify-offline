@@ -18,6 +18,8 @@ Vite 插件：自动扫描源码中的 Iconify 图标引用，从本地 `@iconif
 - 只打包实际用到的图标，包含别名解析
 - 内置过滤 Tailwind / Vue / Vite / Open Graph / Twitter Card 常见 `prefix:name` 误报，并支持通过 `exclude` 自定义排除前缀
 - 对已预注册的图标集禁用自定义 loader 回退，减少运行时网络请求
+- 支持 Iconify 官方离线版入口（`@iconify/vue/offline` 等）：图标注册进组件用的同一个入口，产物里不含任何联网代码
+- 可选 `disableApi`：没有离线版的运行时（`iconify-icon` 系列等）也能彻底禁用在线 API，漏打的图标不会联网
 
 ## 安装
 
@@ -106,9 +108,11 @@ export function App() {
 ```ts
 iconifyOffline({ package: "@iconify/vue" })
 iconifyOffline({ package: "@iconify-icon/solid" })
+iconifyOffline({ package: "@iconify/vue/offline" }) // 官方离线版，见下文
 ```
 
-目标包需要导出 `addCollection`。如果希望插件同时禁用图标集的运行时 loader 回退，目标包也需要导出 `setCustomIconsLoader`。
+目标包需要导出 `addCollection`。主入口还需要导出 `setCustomIconsLoader`（插件用它关掉已注册图标集的 loader 回退）；
+[官方离线版](#官方离线版推荐用于严格离线--csp-场景)入口没有 loader，只调 `addCollection`。
 
 ## 配置
 
@@ -118,6 +122,7 @@ interface IconifyOfflineOptions {
   scanDir?: string
   icons?: string[]
   exclude?: string[]
+  disableApi?: boolean
   verbose?: boolean
 }
 ```
@@ -128,6 +133,7 @@ interface IconifyOfflineOptions {
 | `scanDir` | `string` | `"src"` | 扫描目录，相对于 Vite root。可设为 `"."` 扫描整个项目 |
 | `icons` | `string[]` | `[]` | 手动指定额外要离线化的图标，例如 `["lucide:sun"]` |
 | `exclude` | `string[]` | `[]` | 自定义要排除的 `prefix:` 前缀，跳过对应的 `prefix:name` 误报，例如 `["og", "twitter"]` |
+| `disableApi` | `boolean` | `false` | 彻底禁用 Iconify 在线 API，见下文「禁用在线 API」 |
 | `verbose` | `boolean` | `true` | 是否输出扫描、预注册、注入等日志 |
 
 ## 工作方式
@@ -157,29 +163,63 @@ setCustomIconsLoader(() => ({ prefix: "lucide", icons: {} }), "lucide")
 
 注入脚本的 `src` 按 Vite 的 `base` 生成**绝对路径**（默认 `/` 下形如 `/assets/_iconify-offline_icons-*.js`），因此从子路径页面（如 SSG 预渲染的 `dist/about/index.html`）加载也不会 404；当 `base` 为相对（`./`）时则回退为相对 HTML 的路径。
 
-## 运行时包必须一致
+### 禁用在线 API（`disableApi`）
 
-插件注册到哪个 Iconify 包，组件也应该使用同一个包。否则不同包之间的 storage 可能不共享，图标会显示为空。
+默认情况下，插件只对**已预注册的图标集**关掉 loader 回退。其它前缀，或者扫描不到的图标（比如名字是拼出来的），
+运行时仍会去 `api.iconify.design`（以及备用的 `api.simplesvg.com`、`api.unisvg.com`）现取。
 
-推荐：
+开启 `disableApi` 后，注册脚本会先把运行时的 fetch 换掉：
 
 ```ts
-// vite.config.ts
-iconifyOffline({ package: "@iconify/vue" })
+import { _api, addCollection, setCustomIconsLoader } from "@iconify/vue"
 
-// 组件
+_api.setFetch(() => Promise.resolve(new Response(null, { status: 404, statusText: "iconify-offline: API disabled" })))
+addCollection({ prefix: "lucide", icons: { ... } })
+// ...
+```
+
+- 漏打的图标只是不显示，**不产生任何网络请求**。用 404 而不是抛错：Iconify 把 404 当成「图标不存在」直接放弃，抛错则会轮换备用节点再试
+- 即使一个图标都没扫到，也会生成并注入这个脚本，保证禁用总是生效
+- 脚本注入在 `<head>` 起始处，先于应用入口执行，图标请求发出之前就已生效
+- 要求运行时包导出 `_api`：`@iconify/vue`、`@iconify/react`、`@iconify/svelte`、`iconify-icon` 系列都满足
+- 它替换的是 Iconify 内部用的 fetch（`_api.setFetch`），不动全局 `window.fetch`，对应用自己的请求没有影响
+- 有官方离线版的运行时更推荐直接用[离线版](#官方离线版推荐用于严格离线--csp-场景)：产物里连联网代码都没有
+
+```ts
+iconifyOffline({ disableApi: true })
+```
+
+适合配了严格 CSP（`connect-src` 不放行 Iconify）、需要离线运行，或要求静态资源全部本地化的项目——比如 Capacitor / 鸿蒙等原生壳里的 H5。
+
+## 运行时包必须一致
+
+插件注册到哪个 Iconify 包，组件也必须使用同一个包——不同入口各有一份 storage，注册错了图标会显示为空。
+`package` 不写时按框架自动检测为主入口（`@iconify/vue` 等）；用离线版时请显式写成组件用的那个入口。
+
+```ts
+// 主入口：组件和插件都用 @iconify/vue
+iconifyOffline({ package: "@iconify/vue" })
 import { Icon } from "@iconify/vue"
 ```
 
-避免混用：
+### 官方离线版（推荐用于严格离线 / CSP 场景）
+
+Iconify 的经典组件包自带不含任何联网代码的离线版：只认 `addCollection` / `addIcon` 注册进来的图标，
+没有 API、没有 loader，打出来的包也更小。插件会把扫描到的图标直接注册进这个入口：
+
+| 运行时 | 插件 `package` | 组件从哪儿导入 |
+|---|---|---|
+| Vue 3 | `@iconify/vue/offline` | `import { Icon } from "@iconify/vue/offline"` |
+| Vue 2 | `@iconify/vue2/offline` | `import { Icon } from "@iconify/vue2/offline"` |
+| React | `@iconify/react/offline` | `import { Icon } from "@iconify/react/offline"` |
+| Svelte | `@iconify/svelte/dist/offline-functions` | `import Icon from "@iconify/svelte/dist/OfflineIcon.svelte"` |
 
 ```ts
-// 插件注册到 @iconify/vue
-iconifyOffline({ package: "@iconify/vue" })
-
-// 组件却使用 @iconify/vue/offline，可能读取不到同一份 storage
-import { Icon } from "@iconify/vue/offline"
+iconifyOffline({ package: "@iconify/vue/offline" })
 ```
+
+`iconify-icon` 系列（含 `@iconify-icon/solid`、`@iconify-icon/react`）和 `@iconify/ember` **没有**离线版，
+要彻底不联网请用 [`disableApi`](#禁用在线-apidisableapi)。离线版本身不含联网代码，`disableApi` 对它不生效也不需要。
 
 Solid 项目同理：插件应注册到 `@iconify-icon/solid`，组件也使用 `@iconify-icon/solid`。
 
@@ -273,6 +313,8 @@ npm i -D @iconify/json
 - 缺失图标集时不崩溃
 - 从 `@iconify/json` 大包读取图标集
 - 图标别名解析和误报过滤
+- `disableApi`：build / dev 均先禁用再注册、无图标时仍注入；对真实 `@iconify/vue` 验证未打包图标不联网、只尝试一次
+- 官方离线版入口：Vue / React / Svelte 离线版的注册与渲染（含「注册进主入口则离线组件读不到」的对照），build 产物不含 Iconify API
 
 ## 与 `@tomjs/vite-plugin-iconify` 对比
 

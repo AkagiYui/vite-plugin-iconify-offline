@@ -63,6 +63,10 @@ export interface IconifyOfflineOptions {
   /**
    * Iconify 图标组件包名，插件会从中导入 `addCollection`。
    * 例如：`@iconify/vue`、`@iconify/vue/offline`、`@iconify-icon/solid` 等。
+   *
+   * 官方离线版入口（不含任何联网代码）要和组件用同一个：`@iconify/vue/offline`、`@iconify/vue2/offline`、
+   * `@iconify/react/offline`、`@iconify/svelte/dist/offline-functions`（Svelte 组件是 `dist/OfflineIcon.svelte`）。
+   * 插件会把图标注册进这个入口本身——离线版和主入口各有一份 storage。
    * 不指定时自动从 Vite 插件列表检测框架：
    * vue → @iconify/vue，react → @iconify/react，solid → @iconify-icon/solid
    * @default 自动检测，检测不到时回退为 "@iconify/vue"
@@ -91,6 +95,23 @@ export interface IconifyOfflineOptions {
    * @default []
    */
   exclude?: string[]
+
+  /**
+   * 彻底禁用 Iconify 的在线 API（api.iconify.design 及其备用节点）。
+   *
+   * 默认只对已预注册的图标集关掉 loader 回退；其它前缀、或扫描漏掉的图标（例如动态拼接的名字）
+   * 运行时仍会去 Iconify API 现取。开启后，注册脚本会把运行时的 fetch 换成一个不联网、
+   * 直接回 404 的实现：漏打的图标只是不显示，不会产生任何网络请求。
+   * 适合有严格 CSP、离线环境，或要求静态资源全部本地化（降低供应链风险）的项目。
+   *
+   * 开启后即使没有扫描到任何图标，也会生成并注入注册脚本，保证禁用总是生效。
+   * 目标包需要导出 `_api`（`@iconify/vue`、`@iconify/react`、`@iconify/svelte`、`iconify-icon` 系列都有）。
+   *
+   * 有官方离线版的运行时（Vue / Vue2 / React / Svelte）更推荐直接用离线版入口（见 `package`），
+   * 那里根本没有联网代码，这个选项对它们不生效也不需要。没有离线版的（`iconify-icon` 系列、Ember）用这个。
+   * @default false
+   */
+  disableApi?: boolean
 
   /**
    * 是否在控制台输出详细日志。
@@ -353,20 +374,47 @@ function createSnapshot(collections: IconifyJSON[]): IconRegistrySnapshot {
   }
 }
 
-function generateIconRegistrationModule(collections: IconifyJSON[], pkgName: string): string {
-  if (collections.length === 0) return ""
+/**
+ * 禁用在线 API 时注入的 fetch 实现：不发请求，直接回 404。
+ * 用 404 而不是 reject：Iconify 把 404 视为「图标不存在」直接放弃（shouldAbort），
+ * 其它失败会轮换到 api.simplesvg.com / api.unisvg.com 再试，白白多几轮超时和报错。
+ */
+export const DISABLED_API_FETCH = "() => Promise.resolve(new Response(null, { status: 404, statusText: \"iconify-offline: API disabled\" }))"
 
-  const addCollectionCalls = collections
-    .map(c => `addCollection(${JSON.stringify(c)});`)
-    .join("\n")
+/**
+ * 是否是 Iconify 官方离线版入口：只认 addCollection / addIcon 注册进来的数据，没有 loader、没有 API，也就没有联网代码。
+ * Vue / Vue2 / React 是 `<pkg>/offline`（或 `<pkg>/dist/offline`），Svelte 是 `@iconify/svelte/dist/offline-functions`。
+ */
+export function isOfflineEntry(pkgName: string): boolean {
+  return /\/(?:dist\/)?offline(?:-functions)?$/.test(pkgName)
+}
 
-  const disableLoaderCalls = collections
-    .map(c => `setCustomIconsLoader(() => ({ prefix: ${JSON.stringify(c.prefix)}, icons: {} }), ${JSON.stringify(c.prefix)});`)
-    .join("\n")
+export function generateIconRegistrationModule(collections: IconifyJSON[], pkgName: string, disableApi = false): string {
+  if (isOfflineEntry(pkgName)) {
+    // 注册进组件实际使用的那个入口：离线版和主入口各有一份 storage，注册到主入口的话组件读不到，图标是空的。
+    // 离线版没有 setCustomIconsLoader / _api（也不需要：本来就不会联网），只调 addCollection
+    if (collections.length === 0) return ""
+    return `import { addCollection } from "${pkgName}";\n${collections.map(c => `addCollection(${JSON.stringify(c)});`).join("\n")}\n`
+  }
 
-  const importFrom = pkgName.replace(/\/offline$/, "")
+  const imports: string[] = []
+  const statements: string[] = []
 
-  return `import { addCollection, setCustomIconsLoader } from "${importFrom}";\n${addCollectionCalls}\n${disableLoaderCalls}\n`
+  if (disableApi) {
+    // 放在最前面：在任何图标请求发出之前生效
+    imports.push("_api")
+    statements.push(`_api.setFetch(${DISABLED_API_FETCH});`)
+  }
+
+  if (collections.length > 0) {
+    imports.push("addCollection", "setCustomIconsLoader")
+    statements.push(...collections.map(c => `addCollection(${JSON.stringify(c)});`))
+    statements.push(...collections.map(c => `setCustomIconsLoader(() => ({ prefix: ${JSON.stringify(c.prefix)}, icons: {} }), ${JSON.stringify(c.prefix)});`))
+  }
+
+  if (statements.length === 0) return ""
+
+  return `import { ${imports.join(", ")} } from "${pkgName}";\n${statements.join("\n")}\n`
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +451,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
     scanDir: customScanDir,
     icons = [],
     exclude = [],
+    disableApi = false,
   } = options
 
   // 用户自定义排除的前缀，规范化：去除尾部冒号、空白并转小写（图标 prefix 恒为小写）
@@ -416,6 +465,11 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
   let command: "serve" | "build" = "build"
   let server: ViteDevServer | undefined
   let snapshot: IconRegistrySnapshot = createSnapshot([])
+
+  /** 是否需要注册模块：有图标要预注册，或者要禁用在线 API（哪怕一个图标都没扫到；离线版入口没有 API 可禁） */
+  function hasRegistrationModule(): boolean {
+    return preloadCollections.length > 0 || (disableApi && !isOfflineEntry(pkgName!))
+  }
 
   function findFiles(dir: string, predicate: (filePath: string) => boolean): string[] {
     let entries: fs.Dirent[]
@@ -473,7 +527,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
   }
 
   function injectGeneratedChunks(outDir: string): void {
-    if (preloadCollections.length === 0 || !fs.existsSync(outDir)) return
+    if (!hasRegistrationModule() || !fs.existsSync(outDir)) return
 
     const htmlFiles = findFiles(outDir, filePath => path.basename(filePath) === "index.html")
     const chunkFiles = findFiles(outDir, filePath => path.basename(filePath).includes("_iconify-offline_icons") && filePath.endsWith(".js"))
@@ -560,6 +614,10 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
           console.log(`[iconify-offline] 自动检测到图标包: ${pkgName}`)
         }
       }
+
+      if (disableApi && isOfflineEntry(pkgName) && verbose) {
+        console.log(`[iconify-offline] ${pkgName} 是离线版入口，本身不含联网代码，disableApi 无需生效`)
+      }
     },
 
     configureServer(viteServer) {
@@ -569,7 +627,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
     buildStart() {
       refreshSnapshot()
 
-      if (preloadCollections.length > 0 && command === "build") {
+      if (hasRegistrationModule() && command === "build") {
         this.emitFile({
           type: "chunk",
           id: VIRTUAL_MODULE_ID,
@@ -582,7 +640,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
     },
 
     transformIndexHtml() {
-      if (command !== "serve" || preloadCollections.length === 0) return
+      if (command !== "serve" || !hasRegistrationModule()) return
 
       return [
         {
@@ -600,7 +658,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
 
     load(id) {
       if (id !== RESOLVED_VIRTUAL_MODULE_ID) return
-      return generateIconRegistrationModule(snapshot.collections, pkgName!)
+      return generateIconRegistrationModule(snapshot.collections, pkgName!, disableApi)
     },
 
     handleHotUpdate(ctx) {
@@ -621,7 +679,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
 
     // 构建完成后，将 chunk 注入到实际输出目录中的 index.html
     writeBundle(outputOptions, bundle) {
-      if (preloadCollections.length === 0) return
+      if (!hasRegistrationModule()) return
 
       let chunkFile = ""
       for (const [, info] of Object.entries(bundle)) {
