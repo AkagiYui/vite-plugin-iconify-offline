@@ -168,7 +168,6 @@ export const SKIP_PREFIXES = new Set([
 
 /** prefix -> Set<iconName> */
 export const collectedIcons = new Map<string, Set<string>>()
-let preloadCollections: IconifyJSON[] = []
 
 interface IconRegistrySnapshot {
   collections: IconifyJSON[]
@@ -187,6 +186,10 @@ export function clearCollectedIcons(): void {
  * @param exclude - 用户自定义要排除的前缀集合，与内置 {@link SKIP_PREFIXES} 合并生效
  */
 export function collectIcon(full: string, exclude?: ReadonlySet<string>): boolean {
+  return collectIconInto(full, exclude, collectedIcons)
+}
+
+function collectIconInto(full: string, exclude: ReadonlySet<string> | undefined, registry: Map<string, Set<string>>): boolean {
   const colonIdx = full.indexOf(":")
   if (colonIdx === -1) return false
   const prefix = full.slice(0, colonIdx)
@@ -198,10 +201,10 @@ export function collectIcon(full: string, exclude?: ReadonlySet<string>): boolea
   // 跳过 data-[xxx]: 格式的属性修饰符
   if (prefix.endsWith("-") || iconName.startsWith("[")) return false
 
-  if (!collectedIcons.has(prefix)) {
-    collectedIcons.set(prefix, new Set())
+  if (!registry.has(prefix)) {
+    registry.set(prefix, new Set())
   }
-  collectedIcons.get(prefix)!.add(iconName)
+  registry.get(prefix)!.add(iconName)
   return true
 }
 
@@ -216,21 +219,26 @@ export function collectIcon(full: string, exclude?: ReadonlySet<string>): boolea
  * @param exclude - 用户自定义要排除的前缀集合
  */
 export function extractIcons(code: string, exclude?: ReadonlySet<string>): void {
+  extractIconsInto(code, exclude, collectedIcons)
+}
+
+function extractIconsInto(code: string, exclude: ReadonlySet<string> | undefined, registry: Map<string, Set<string>>): void {
   const matches = code.matchAll(ICON_PATTERN)
   for (const match of matches) {
-    collectIcon(match[1], exclude)
+    collectIconInto(match[1], exclude, registry)
   }
 }
 
 /**
  * 递归扫描目录，提取图标引用。
  */
-function scanDir(dir: string, exclude?: ReadonlySet<string>): void {
+function scanDir(dir: string, exclude: ReadonlySet<string>, registry: Map<string, Set<string>>): boolean {
+  let complete = true
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true })
   } catch {
-    return // 目录不存在时静默跳过
+    return false // 读取失败的扫描不能替换开发服务器的有效快照
   }
 
   for (const entry of entries) {
@@ -241,7 +249,7 @@ function scanDir(dir: string, exclude?: ReadonlySet<string>): void {
       if (["node_modules", ".git", "dist", ".output", ".cloudflare", ".vercel", ".next"].includes(entry.name)) {
         continue
       }
-      scanDir(fullPath, exclude)
+      if (!scanDir(fullPath, exclude, registry)) complete = false
       continue
     }
 
@@ -249,18 +257,26 @@ function scanDir(dir: string, exclude?: ReadonlySet<string>): void {
     if (/\.(tsx?|jsx?|vue|svelte)$/.test(entry.name)) {
       try {
         const code = fs.readFileSync(fullPath, "utf-8")
-        extractIcons(code, exclude)
+        extractIconsInto(code, exclude, registry)
       } catch {
-        // 忽略读取失败的文件
+        complete = false
       }
     }
   }
+  return complete
 }
 
 /**
  * 加载指定图标集的 JSON 数据。
  */
 function loadIconSet(prefix: string, rootDir: string): IconifyJSON | null {
+  function readSet(file: string): IconifyJSON {
+    const data = JSON.parse(fs.readFileSync(file, "utf-8"))
+    if (!data || typeof data.icons !== "object" || !data.icons || Array.isArray(data.icons)) {
+      throw new Error(`Invalid icon set: ${file}`)
+    }
+    return data
+  }
   // 优先从 @iconify-json 包读取
   const tryPaths = [
     path.join(rootDir, "node_modules", "@iconify-json", prefix, "icons.json"),
@@ -269,7 +285,7 @@ function loadIconSet(prefix: string, rootDir: string): IconifyJSON | null {
   for (const p of tryPaths) {
     try {
       if (fs.existsSync(p)) {
-        return JSON.parse(fs.readFileSync(p, "utf-8"))
+        return readSet(p)
       }
     } catch {
       // 继续尝试下一个路径
@@ -279,14 +295,14 @@ function loadIconSet(prefix: string, rootDir: string): IconifyJSON | null {
   // 通过 require.resolve 尝试解析
   try {
     const resolved = require.resolve(`@iconify-json/${prefix}/icons.json`, { paths: [rootDir] })
-    return JSON.parse(fs.readFileSync(resolved, "utf-8"))
+    return readSet(resolved)
   } catch {
     // 忽略
   }
 
   try {
     const resolved = require.resolve(`@iconify/json/json/${prefix}.json`, { paths: [rootDir] })
-    return JSON.parse(fs.readFileSync(resolved, "utf-8"))
+    return readSet(resolved)
   } catch {
     // 忽略
   }
@@ -322,12 +338,16 @@ export function resolveAlias(fullSet: IconifyJSON, name: string): IconifyIconDat
 /**
  * 从扫描结果构建精简后的图标集数据列表。
  */
-function buildPreloadCollections(rootDir: string, verbose: boolean): IconifyJSON[] {
+function buildPreloadCollections(rootDir: string, verbose: boolean, registry: Map<string, Set<string>>) {
   const collections: IconifyJSON[] = []
+  const failedPrefixes = new Set<string>()
 
-  for (const [prefix, iconNames] of collectedIcons) {
+  for (const [prefix, iconNames] of registry) {
     const fullSet = loadIconSet(prefix, rootDir)
-    if (!fullSet) continue
+    if (!fullSet) {
+      failedPrefixes.add(prefix)
+      continue
+    }
 
     const filteredIcons: Record<string, IconifyIconData> = {}
     let found = 0
@@ -364,7 +384,7 @@ function buildPreloadCollections(rootDir: string, verbose: boolean): IconifyJSON
     }
   }
 
-  return collections
+  return { collections, failedPrefixes }
 }
 
 function createSnapshot(collections: IconifyJSON[]): IconRegistrySnapshot {
@@ -465,10 +485,12 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
   let command: "serve" | "build" = "build"
   let server: ViteDevServer | undefined
   let snapshot: IconRegistrySnapshot = createSnapshot([])
+  let retrySnapshot = false
+  let warnedAboutScan = false
 
   /** 是否需要注册模块：有图标要预注册，或者要禁用在线 API（哪怕一个图标都没扫到；离线版入口没有 API 可禁） */
   function hasRegistrationModule(): boolean {
-    return preloadCollections.length > 0 || (disableApi && !isOfflineEntry(pkgName!))
+    return snapshot.collections.length > 0 || (disableApi && !isOfflineEntry(pkgName!))
   }
 
   function findFiles(dir: string, predicate: (filePath: string) => boolean): string[] {
@@ -558,32 +580,47 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
   }
 
   function refreshSnapshot(): boolean {
-    const previousSignature = snapshot.signature
-
-    collectedIcons.clear()
-    preloadCollections = []
-
+    // 扫描状态属于本次扫描，只有读取成功后才提交；不同插件实例不共享状态。
+    const registry = new Map<string, Set<string>>()
     const targetDir = getTargetDir()
-
-    if (fs.existsSync(targetDir)) {
-      scanDir(targetDir, excludeSet)
-    } else if (verbose) {
-      console.warn(`[iconify-offline] 扫描目录不存在: ${targetDir}`)
-    }
+    // 没有源码目录的初始配置仍支持手动 icons；已有数据后目录丢失则视为失败。
+    const complete = !fs.existsSync(targetDir) && snapshot.collections.length === 0
+      ? true
+      : scanDir(targetDir, excludeSet, registry)
 
     for (const icon of icons) {
-      collectIcon(icon, excludeSet)
+      collectIconInto(icon, excludeSet, registry)
     }
 
-    const total = Array.from(collectedIcons.values()).reduce((s, v) => s + v.size, 0)
+    const total = Array.from(registry.values()).reduce((s, v) => s + v.size, 0)
     if (verbose) {
-      console.log(`[iconify-offline] 扫描到 ${total} 个图标引用，${collectedIcons.size} 个图标集`)
+      console.log(`[iconify-offline] 扫描到 ${total} 个图标引用，${registry.size} 个图标集`)
     }
 
-    preloadCollections = buildPreloadCollections(rootDir, verbose)
-    snapshot = createSnapshot(preloadCollections)
+    const { collections, failedPrefixes } = buildPreloadCollections(rootDir, verbose, registry)
+    retrySnapshot = !complete || failedPrefixes.size > 0
+    const lostCollection = snapshot.collections.some(collection => failedPrefixes.has(collection.prefix))
+    if (command === "serve" && (!complete || lostCollection)) {
+      if (!warnedAboutScan) {
+        console.warn("[iconify-offline] 图标扫描未完成，保留上一次有效数据；恢复文件或依赖后刷新页面即可重试")
+        warnedAboutScan = true
+      }
+      return false
+    }
 
-    return snapshot.signature !== previousSignature
+    warnedAboutScan = false
+    const next = createSnapshot(collections)
+    const changed = next.signature !== snapshot.signature
+    snapshot = next
+    return changed
+  }
+
+  function retryFailedSnapshot(): void {
+    if (command !== "serve" || !retrySnapshot) return
+    if (!refreshSnapshot()) return
+    // 页面刷新时也重试失败扫描，并清除先前缓存的空/旧模块。
+    const module = server?.moduleGraph.getModuleById(RESOLVED_VIRTUAL_MODULE_ID)
+    if (module) server!.moduleGraph.invalidateModule(module)
   }
 
   /** 从 Vite 插件列表自动检测框架 */
@@ -640,6 +677,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
     },
 
     transformIndexHtml() {
+      retryFailedSnapshot()
       if (command !== "serve" || !hasRegistrationModule()) return
 
       return [
@@ -658,6 +696,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
 
     load(id) {
       if (id !== RESOLVED_VIRTUAL_MODULE_ID) return
+      retryFailedSnapshot()
       return generateIconRegistrationModule(snapshot.collections, pkgName!, disableApi)
     },
 
