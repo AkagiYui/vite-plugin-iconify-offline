@@ -42,6 +42,79 @@ describe("extractIcons", () => {
     expect(collectedIcons.get("mdi")).toEqual(new Set(["home"]))
   })
 
+  it("应跳过行注释、块注释和 HTML / JSX 注释", () => {
+    extractIcons([
+      '// "unused:line"',
+      '/* "unused:block"\n * `v-model:open`\n * `13:45` */',
+      '<!-- <Icon icon="unused:html" /> -->',
+      '{/* <Icon icon="unused:jsx" /> */}',
+      'const icon = "lucide:sun" // "unused:trailing"',
+      '<Icon icon="mdi:home" />',
+    ].join("\n"))
+    expect([...collectedIcons.keys()]).toEqual(["lucide", "mdi"])
+    expect(collectedIcons.get("lucide")).toEqual(new Set(["sun"]))
+  })
+
+  it("注释中的未配对引号不应影响后面的图标", () => {
+    extractIcons('/* " */\n// \'\n<!-- ` -->\nconst icon = "lucide:sun"')
+    expect(collectedIcons.get("lucide")).toEqual(new Set(["sun"]))
+  })
+
+  it("应保留 Vue 绑定表达式中的图标字面量", () => {
+    extractIcons(`<Icon :icon="active ? 'lucide:sun' : 'lucide:moon'" />`)
+    expect(collectedIcons.get("lucide")).toEqual(new Set(["sun", "moon"]))
+  })
+
+  it("字符串内的 URL、注释符号和转义引号不应吞掉后面的图标", () => {
+    extractIcons(String.raw`
+      const url = "https://example.com/icons"
+      const text = 'it\'s /* a string */ // still a string'
+      const html = "<!-- text -->"
+      const icon = 'lucide:sun'
+    `)
+    expect(collectedIcons.get("lucide")).toEqual(new Set(["sun"]))
+  })
+
+  it("正则表达式内的引号和注释符号不应被当成字符串或注释", () => {
+    extractIcons(String.raw`
+      const slash = /[/*]/; const icon = "lucide:sun"
+      const url = /https?:\/\//; const other = "lucide:moon"
+      const text = /"unused:regex"/
+      const result = total / count; const third = "lucide:check"
+    `)
+    expect([...collectedIcons.keys()]).toEqual(["lucide"])
+    expect(collectedIcons.get("lucide")).toEqual(new Set(["sun", "moon", "check"]))
+  })
+
+  it("应扫描模板插值中的图标并跳过插值内的注释", () => {
+    extractIcons('const icon = `prefix:${/* "unused:template" */ active ? "lucide:sun" : `lucide:moon`}`')
+    expect([...collectedIcons.keys()]).toEqual(["lucide"])
+    expect(collectedIcons.get("lucide")).toEqual(new Set(["sun", "moon"]))
+  })
+
+  it("模板字符串中的注释符号是文本，不应影响后续代码", () => {
+    extractIcons('const text = `https://example.com /* text */`; const icon = "lucide:sun"')
+    expect(collectedIcons.get("lucide")).toEqual(new Set(["sun"]))
+  })
+
+  it("Vue / Svelte 模板文本中的 URL 和撇号不应干扰注释过滤", () => {
+    extractIcons(`<template><div>don't https://example.com <!-- "unused:html" --><Icon icon="lucide:sun" /></div></template>
+      <script>/* "unused:script" */ const icon = "lucide:moon"</script>`)
+    expect([...collectedIcons.keys()]).toEqual(["lucide"])
+    expect(collectedIcons.get("lucide")).toEqual(new Set(["sun", "moon"]))
+  })
+
+  it("JSX 文本应保留 URL 和撇号，表达式内仍跳过 JS 注释", () => {
+    extractIcons(`const view = <div>don't https://example.com {/* "unused:jsx" */}<Icon icon={active ? "lucide:sun" : "lucide:moon"} /></div>`)
+    expect([...collectedIcons.keys()]).toEqual(["lucide"])
+    expect(collectedIcons.get("lucide")).toEqual(new Set(["sun", "moon"]))
+  })
+
+  it("TypeScript 泛型和类型断言不应被误当成 JSX 标签", () => {
+    extractIcons('const value = <T>input; const fn = <T,>(x: T) => x; const icon = "lucide:sun"')
+    expect(collectedIcons.get("lucide")).toEqual(new Set(["sun"]))
+  })
+
   it("应对同一个图标不去重", () => {
     const code = `
       <Icon name="lucide:sun" />

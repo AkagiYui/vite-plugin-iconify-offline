@@ -15,7 +15,8 @@ import fs from "node:fs"
 import { createRequire } from "node:module"
 import path from "node:path"
 
-import type { Plugin, ViteDevServer } from "vite"
+import { createFilter, type FilterPattern, type Plugin, type ViteDevServer } from "vite"
+import { forEachSourceString } from "./source-strings"
 
 // ---------------------------------------------------------------------------
 // 类型定义
@@ -97,6 +98,13 @@ export interface IconifyOfflineOptions {
   exclude?: string[]
 
   /**
+   * 不参与扫描的文件，支持相对于 Vite root 的 glob 或正则表达式。
+   * 默认排除 *.test.*、*.spec.* 和 __tests__ 目录；传 [] 可扫描测试文件。
+   * 自定义值会替换默认规则，不影响 exclude 的图标前缀过滤。
+   */
+  excludeFiles?: FilterPattern
+
+  /**
    * 彻底禁用 Iconify 的在线 API（api.iconify.design 及其备用节点）。
    *
    * 默认只对已预注册的图标集关掉 loader 回退；其它前缀、或扫描漏掉的图标（例如动态拼接的名字）
@@ -131,6 +139,8 @@ const ICON_PATTERN = /["'`]([a-z0-9-]+:[a-z0-9-]+)["'`]/g
 
 const VIRTUAL_MODULE_ID = "virtual:iconify-offline:icons"
 const RESOLVED_VIRTUAL_MODULE_ID = `\0${VIRTUAL_MODULE_ID}`
+
+const DEFAULT_EXCLUDE_FILES = ["**/*.{test,spec}.{ts,tsx,js,jsx,vue,svelte}", "**/__tests__/**"]
 
 /** 已知的 Tailwind 修饰符 / Vue 事件 / data-* 属性，排除误报 */
 export const SKIP_PREFIXES = new Set([
@@ -222,17 +232,18 @@ export function extractIcons(code: string, exclude?: ReadonlySet<string>): void 
   extractIconsInto(code, exclude, collectedIcons)
 }
 
-function extractIconsInto(code: string, exclude: ReadonlySet<string> | undefined, registry: Map<string, Set<string>>): void {
-  const matches = code.matchAll(ICON_PATTERN)
-  for (const match of matches) {
-    collectIconInto(match[1], exclude, registry)
-  }
+function extractIconsInto(code: string, exclude: ReadonlySet<string> | undefined, registry: Map<string, Set<string>>, file?: string): void {
+  forEachSourceString(code, (literal) => {
+    for (const match of literal.matchAll(ICON_PATTERN)) {
+      collectIconInto(match[1], exclude, registry)
+    }
+  }, file ? /\.(vue|svelte)$/.test(file) : undefined)
 }
 
 /**
  * 递归扫描目录，提取图标引用。
  */
-function scanDir(dir: string, exclude: ReadonlySet<string>, registry: Map<string, Set<string>>): boolean {
+function scanDir(dir: string, exclude: ReadonlySet<string>, registry: Map<string, Set<string>>, fileFilter: (file: string) => boolean): boolean {
   let complete = true
   let entries: fs.Dirent[]
   try {
@@ -249,15 +260,16 @@ function scanDir(dir: string, exclude: ReadonlySet<string>, registry: Map<string
       if (["node_modules", ".git", "dist", ".output", ".cloudflare", ".vercel", ".next"].includes(entry.name)) {
         continue
       }
-      if (!scanDir(fullPath, exclude, registry)) complete = false
+      if (!fileFilter(`${fullPath}/`)) continue
+      if (!scanDir(fullPath, exclude, registry, fileFilter)) complete = false
       continue
     }
 
     // 只扫描源码文件
-    if (/\.(tsx?|jsx?|vue|svelte)$/.test(entry.name)) {
+    if (/\.(tsx?|jsx?|vue|svelte)$/.test(entry.name) && fileFilter(fullPath)) {
       try {
         const code = fs.readFileSync(fullPath, "utf-8")
-        extractIconsInto(code, exclude, registry)
+        extractIconsInto(code, exclude, registry, fullPath)
       } catch {
         complete = false
       }
@@ -471,6 +483,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
     scanDir: customScanDir,
     icons = [],
     exclude = [],
+    excludeFiles = DEFAULT_EXCLUDE_FILES,
     disableApi = false,
   } = options
 
@@ -480,6 +493,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
   )
 
   let rootDir: string
+  let fileFilter: (file: string) => boolean
   let base = "/"  // Vite 的 base，用于生成注入脚本的绝对 URL
   let pkgName = userPkg  // 用户显式指定优先，未指定则 auto-detect
   let command: "serve" | "build" = "build"
@@ -586,7 +600,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
     // 没有源码目录的初始配置仍支持手动 icons；已有数据后目录丢失则视为失败。
     const complete = !fs.existsSync(targetDir) && snapshot.collections.length === 0
       ? true
-      : scanDir(targetDir, excludeSet, registry)
+      : scanDir(targetDir, excludeSet, registry, fileFilter)
 
     for (const icon of icons) {
       collectIconInto(icon, excludeSet, registry)
@@ -641,6 +655,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
 
     configResolved(config) {
       rootDir = config.root
+      fileFilter = createFilter(undefined, excludeFiles, { resolve: rootDir })
       base = config.base
       command = config.command
 
@@ -701,7 +716,7 @@ function iconifyOffline(options: IconifyOfflineOptions = {}): Plugin {
     },
 
     handleHotUpdate(ctx) {
-      if (command !== "serve" || !isSourceFile(ctx.file) || !isInTargetDir(ctx.file)) return
+      if (command !== "serve" || !isSourceFile(ctx.file) || !fileFilter(ctx.file) || !isInTargetDir(ctx.file)) return
 
       const changed = refreshSnapshot()
       if (!changed) return

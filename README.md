@@ -122,6 +122,7 @@ interface IconifyOfflineOptions {
   scanDir?: string
   icons?: string[]
   exclude?: string[]
+  excludeFiles?: string | RegExp | readonly (string | RegExp)[] | null
   disableApi?: boolean
   verbose?: boolean
 }
@@ -133,6 +134,7 @@ interface IconifyOfflineOptions {
 | `scanDir` | `string` | `"src"` | 扫描目录，相对于 Vite root。可设为 `"."` 扫描整个项目 |
 | `icons` | `string[]` | `[]` | 手动指定额外要离线化的图标，例如 `["lucide:sun"]` |
 | `exclude` | `string[]` | `[]` | 自定义要排除的 `prefix:` 前缀，跳过对应的 `prefix:name` 误报，例如 `["og", "twitter"]` |
+| `excludeFiles` | `string \| RegExp \| readonly (string \| RegExp)[] \| null` | 测试文件规则，见下文 | 不扫描的文件，glob 相对于 Vite root；自定义值替换默认规则，`[]` 可扫描测试文件 |
 | `disableApi` | `boolean` | `false` | 彻底禁用 Iconify 在线 API，见下文「禁用在线 API」 |
 | `verbose` | `boolean` | `true` | 是否输出扫描、预注册、注入等日志 |
 
@@ -257,6 +259,23 @@ iconifyOffline({
 ```
 
 ## 误报过滤
+
+扫描会跳过 JS / JSX / HTML 注释，并保留字符串、Vue 绑定表达式和模板插值中的图标字面量。
+默认不扫描 `*.test.{ts,tsx,js,jsx,vue,svelte}`、`*.spec.{ts,tsx,js,jsx,vue,svelte}` 和 `__tests__` 目录，避免测试数据中的时间（`"00:00"`）、缓存键（`"room-detail:5"`）等被当成图标。
+
+可通过 `excludeFiles` 替换默认文件规则；该过滤同时用于初始扫描和开发时热更新。若需保留默认规则并追加目录：
+
+```ts
+iconifyOffline({
+  excludeFiles: [
+    "**/*.{test,spec}.{ts,tsx,js,jsx,vue,svelte}",
+    "**/__tests__/**",
+    "src/fixtures/**",
+  ],
+})
+```
+
+需要扫描测试文件的项目可设置 `excludeFiles: []`；手动配置的 `icons` 不受文件排除规则影响。
 
 插件按 `prefix:name` 模式扫描字符串字面量，部分非图标写法也会命中该模式。已内置过滤常见误报，包括 Tailwind 修饰符（`hover:`、`sm:` 等）、Vue 事件（`update:`）、Vite 虚拟模块（`virtual:`）以及 Open Graph / Twitter Card 的 meta 前缀（`og:`、`twitter:`）：
 
